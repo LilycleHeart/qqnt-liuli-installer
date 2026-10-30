@@ -66,7 +66,7 @@ namespace LiteLoaderInstaller
                 using (var d = new FolderBrowserDialog { Description = "选择 QQ.exe 所在的文件夹" })
                     if (d.ShowDialog(this) == DialogResult.OK) qqBox.Text = d.SelectedPath;
             };
-            pluginBox = new CheckBox { Text = "同时安装插件：琉璃（外观）、QQ 增强（防撤回等）", Location = new Point(16, 78), AutoSize = true, Checked = true };
+            pluginBox = new CheckBox { Text = "同时安装琉璃主题插件", Location = new Point(16, 78), AutoSize = true, Checked = true };
             installBtn = new Button { Text = "一键安装", Location = new Point(16, 110), Size = new Size(140, 36) };
             restoreBtn = new Button { Text = "还原", Location = new Point(166, 110), Size = new Size(100, 36) };
             installBtn.Click += delegate { Run(true); };
@@ -175,7 +175,7 @@ namespace LiteLoaderInstaller
             if (plugins)
             {
                 ExtractRes("plugins.zip", Path.Combine(LLRoot, "plugins"));
-                Log("插件已装好：琉璃、QQ 增强");
+                Log("琉璃插件已装好");
             }
 
             // 启动器 + package.json

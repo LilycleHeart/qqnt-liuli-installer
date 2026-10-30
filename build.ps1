@@ -20,7 +20,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 # 插件：只取 git 里跟踪的文件（不带壁纸等本地文件）
 $stage = Join-Path $payload 'plugins'
-foreach ($p in 'liuli-dsh-theme', 'qq-enhance') {
+foreach ($p in 'liuli-dsh-theme') {
     $src = Join-Path $PluginRoot $p
     $tar = Join-Path $payload "$p.zip"
     git -C $src archive --format=zip --prefix="$p/" -o $tar HEAD
