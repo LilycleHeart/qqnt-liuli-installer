@@ -38,10 +38,25 @@ namespace LiteLoaderInstaller
     class MainForm : Form
     {
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false);
+        // 配色：琉璃粉
+        static readonly Color Brand = Color.FromArgb(0xD9, 0x57, 0x7B);
+        static readonly Color BrandHover = Color.FromArgb(0xC8, 0x48, 0x6C);
+        static readonly Color Bg = Color.FromArgb(0xFB, 0xF8, 0xF9);
+        static readonly Color CardBg = Color.White;
+        static readonly Color Line = Color.FromArgb(0xEC, 0xE4, 0xE7);
+        static readonly Color TextMain = Color.FromArgb(0x22, 0x1A, 0x1D);
+        static readonly Color TextSub = Color.FromArgb(0x7A, 0x6E, 0x72);
+        static readonly Color Ok = Color.FromArgb(0x2E, 0x7D, 0x4F);
+        static readonly Color Err = Color.FromArgb(0xC6, 0x28, 0x28);
+
         TextBox qqBox;
         CheckBox pluginBox;
-        Button installBtn, restoreBtn, browseBtn;
+        RoundButton installBtn;
+        LinkLabel restoreBtn, browseBtn, detailBtn;
+        Label statusLbl;
+        ProgressBar bar;
         TextBox logBox;
+        const int CollapsedH = 360, ExpandedH = 540;
 
         static string LLRoot
         {
@@ -51,33 +66,124 @@ namespace LiteLoaderInstaller
 
         public MainForm()
         {
-            Text = "QQNT LiteLoader 一键安装";
+            Text = "琉璃安装器";
             Font = new Font("Microsoft YaHei UI", 9.5f);
-            ClientSize = new Size(560, 400);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            ClientSize = new Size(480, CollapsedH);
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
+            BackColor = Bg;
+            ForeColor = TextMain;
+            Icon = AppIcon();
 
-            var lbl = new Label { Text = "QQ 安装位置", Location = new Point(16, 18), AutoSize = true };
-            qqBox = new TextBox { Location = new Point(16, 42), Width = 440, Text = FindQQ() ?? "" };
-            browseBtn = new Button { Text = "浏览…", Location = new Point(464, 40), Width = 80 };
-            browseBtn.Click += delegate
+            var title = new Label
+            {
+                Text = "琉璃 for QQ", Font = new Font(Font.FontFamily, 18f, FontStyle.Bold),
+                ForeColor = TextMain, Location = new Point(28, 26), AutoSize = true
+            };
+            var sub = new Label
+            {
+                Text = "一键装好 LiteLoader 和琉璃主题", ForeColor = TextSub,
+                Location = new Point(30, 68), AutoSize = true
+            };
+
+            // 卡片：QQ 位置 + 插件开关
+            var card = new CardPanel { Location = new Point(28, 104), Size = new Size(424, 116), BackColor = CardBg, Border = Line };
+            var pathLbl = new Label { Text = "QQ 位置", ForeColor = TextSub, Location = new Point(18, 16), AutoSize = true };
+            browseBtn = MakeLink("更改", 0);
+            browseBtn.Location = new Point(card.Width - 18 - browseBtn.PreferredWidth, 16);
+            browseBtn.LinkClicked += delegate
             {
                 using (var d = new FolderBrowserDialog { Description = "选择 QQ.exe 所在的文件夹" })
-                    if (d.ShowDialog(this) == DialogResult.OK) qqBox.Text = d.SelectedPath;
+                    if (d.ShowDialog(this) == DialogResult.OK) { qqBox.Text = d.SelectedPath; CheckPath(); }
             };
-            pluginBox = new CheckBox { Text = "同时安装琉璃主题插件", Location = new Point(16, 78), AutoSize = true, Checked = true };
-            installBtn = new Button { Text = "一键安装", Location = new Point(16, 110), Size = new Size(140, 36) };
-            restoreBtn = new Button { Text = "还原", Location = new Point(166, 110), Size = new Size(100, 36) };
+            qqBox = new TextBox
+            {
+                Text = FindQQ() ?? "", BorderStyle = BorderStyle.None, BackColor = CardBg, ForeColor = TextMain,
+                Location = new Point(18, 42), Width = card.Width - 36
+            };
+            qqBox.TextChanged += delegate { CheckPath(); };
+            var sep = new Panel { BackColor = Line, Location = new Point(18, 70), Size = new Size(card.Width - 36, 1) };
+            pluginBox = new CheckBox
+            {
+                Text = "同时安装琉璃主题", Checked = true, ForeColor = TextMain, FlatStyle = FlatStyle.System,
+                Location = new Point(18, 82), AutoSize = true
+            };
+            card.Controls.AddRange(new Control[] { pathLbl, browseBtn, qqBox, sep, pluginBox });
+
+            installBtn = new RoundButton
+            {
+                Text = "一键安装", Location = new Point(28, 240), Size = new Size(424, 46),
+                Font = new Font(Font.FontFamily, 11f, FontStyle.Bold), Normal = Brand, Hover = BrandHover
+            };
             installBtn.Click += delegate { Run(true); };
-            restoreBtn.Click += delegate { Run(false); };
+
+            bar = new ProgressBar { Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 25, Location = new Point(28, 294), Size = new Size(424, 3), Visible = false };
+
+            statusLbl = new Label
+            {
+                Text = "会先关闭 QQ，并备份原文件", ForeColor = TextSub,
+                Location = new Point(28, 312), Size = new Size(280, 22), AutoEllipsis = true
+            };
+            restoreBtn = MakeLink("还原", 0);
+            detailBtn = MakeLink("详情", 0);
+            detailBtn.Location = new Point(452 - detailBtn.PreferredWidth, 312);
+            restoreBtn.Location = new Point(detailBtn.Left - 16 - restoreBtn.PreferredWidth, 312);
+            restoreBtn.LinkClicked += delegate
+            {
+                if (MessageBox.Show(this, "把 QQ 恢复成安装前的样子？\n琉璃的设置和数据会留着。", Text,
+                    MessageBoxButtons.OKCancel, MessageBoxIcon.Question) == DialogResult.OK) Run(false);
+            };
+            detailBtn.LinkClicked += delegate { ToggleDetail(!logBox.Visible); };
+
             logBox = new TextBox
             {
-                Location = new Point(16, 158), Size = new Size(528, 226), Multiline = true, ReadOnly = true,
-                ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Window
+                Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
+                BackColor = CardBg, ForeColor = TextSub, Font = new Font("Consolas", 9f),
+                Location = new Point(28, 348), Size = new Size(424, 168), Visible = false
             };
-            Controls.AddRange(new Control[] { lbl, qqBox, browseBtn, pluginBox, installBtn, restoreBtn, logBox });
-            Log("会自动关闭 QQ。安装前会备份原文件，点「还原」可以恢复。");
+
+            Controls.AddRange(new Control[] { title, sub, card, installBtn, bar, statusLbl, restoreBtn, detailBtn, logBox });
+            CheckPath();
+        }
+
+        LinkLabel MakeLink(string text, int x)
+        {
+            return new LinkLabel
+            {
+                Text = text, AutoSize = true, LinkBehavior = LinkBehavior.HoverUnderline,
+                LinkColor = Brand, ActiveLinkColor = BrandHover, DisabledLinkColor = TextSub, BackColor = Color.Transparent
+            };
+        }
+
+        void ToggleDetail(bool show)
+        {
+            logBox.Visible = show;
+            detailBtn.Text = show ? "收起" : "详情";
+            detailBtn.Left = 452 - detailBtn.PreferredWidth;
+            ClientSize = new Size(ClientSize.Width, show ? ExpandedH : CollapsedH);
+        }
+
+        bool PathOk()
+        {
+            string root = qqBox.Text.Trim().Trim('"');
+            return root.Length > 0 && File.Exists(Path.Combine(root, "QQ.exe")) && Directory.Exists(Path.Combine(root, "versions"));
+        }
+
+        void CheckPath()
+        {
+            if (installBtn == null || bar.Visible) return;
+            bool ok = PathOk();
+            installBtn.Enabled = ok;
+            SetStatus(ok ? "会先关闭 QQ，并备份原文件" : "没找到 QQ，请点「更改」选 QQ.exe 所在文件夹", ok ? TextSub : Err);
+        }
+
+        void SetStatus(string s, Color c)
+        {
+            if (InvokeRequired) { BeginInvoke(new Action<string, Color>(SetStatus), s, c); return; }
+            statusLbl.Text = s;
+            statusLbl.ForeColor = c;
         }
 
         void Log(string s)
@@ -85,6 +191,32 @@ namespace LiteLoaderInstaller
             if (headlessLog != null) { headlessLog.WriteLine(s); headlessLog.Flush(); return; }
             if (InvokeRequired) { BeginInvoke(new Action<string>(Log), s); return; }
             logBox.AppendText(s + "\r\n");
+            SetStatus(s, TextSub);
+        }
+
+        // 窗口图标：Material "palette" 图标的几何，画在品牌色圆底上
+        static Icon AppIcon()
+        {
+            using (var bmp = new Bitmap(64, 64))
+            {
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    using (var b = new SolidBrush(Brand)) g.FillEllipse(b, 2, 2, 60, 60);
+                    using (var w = new SolidBrush(Color.White))
+                    {
+                        g.FillEllipse(w, 14, 14, 36, 36);
+                        using (var dot = new SolidBrush(Brand))
+                        {
+                            g.FillEllipse(dot, 20, 26, 7, 7);
+                            g.FillEllipse(dot, 27, 18, 7, 7);
+                            g.FillEllipse(dot, 37, 21, 7, 7);
+                        }
+                        using (var hole = new SolidBrush(Brand)) g.FillEllipse(hole, 34, 34, 9, 9);
+                    }
+                }
+                return Icon.FromHandle(bmp.GetHicon());
+            }
         }
 
         StreamWriter headlessLog;
@@ -115,21 +247,30 @@ namespace LiteLoaderInstaller
         {
             string root = qqBox.Text.Trim().Trim('"');
             bool plugins = pluginBox.Checked;
-            if (!File.Exists(Path.Combine(root, "QQ.exe")) || !Directory.Exists(Path.Combine(root, "versions")))
-            {
-                MessageBox.Show(this, "这个文件夹里没有 QQ。请选 QQ.exe 所在的文件夹。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-            installBtn.Enabled = restoreBtn.Enabled = browseBtn.Enabled = false;
+            if (!PathOk()) { CheckPath(); return; }
+            installBtn.Enabled = restoreBtn.Enabled = browseBtn.Enabled = pluginBox.Enabled = false;
+            qqBox.ReadOnly = true;
+            installBtn.Text = install ? "正在安装…" : "正在还原…";
+            bar.Visible = true;
             new Thread(delegate ()
             {
+                string done = null, fail = null;
                 try
                 {
                     if (install) Install(root, plugins); else Restore(root);
-                    Log(install ? "安装完成，QQ 已启动。" : "还原完成，QQ 已启动。");
+                    done = install ? "安装完成，QQ 已打开" : "还原完成，QQ 已打开";
+                    Log(done);
                 }
-                catch (Exception ex) { Log("失败：" + ex.Message); }
-                finally { BeginInvoke(new Action(delegate { installBtn.Enabled = restoreBtn.Enabled = browseBtn.Enabled = true; })); }
+                catch (Exception ex) { fail = "失败：" + ex.Message; Log(fail); }
+                BeginInvoke(new Action(delegate
+                {
+                    bar.Visible = false;
+                    qqBox.ReadOnly = false;
+                    installBtn.Enabled = restoreBtn.Enabled = browseBtn.Enabled = pluginBox.Enabled = true;
+                    installBtn.Text = done != null && install ? "重新安装" : "一键安装";
+                    SetStatus(done ?? fail, done != null ? Ok : Err);
+                    if (fail != null) ToggleDetail(true);
+                }));
             }) { IsBackground = true }.Start();
         }
 
@@ -303,6 +444,83 @@ namespace LiteLoaderInstaller
                     Directory.CreateDirectory(Path.GetDirectoryName(target));
                     e.ExtractToFile(target, true);
                 }
+            }
+        }
+    }
+}
+
+
+namespace LiteLoaderInstaller
+{
+    using System.Drawing.Drawing2D;
+
+    static class Shapes
+    {
+        public static GraphicsPath Round(Rectangle r, int radius)
+        {
+            int d = radius * 2;
+            var p = new GraphicsPath();
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+    }
+
+    // 圆角主按钮：自己画，悬停变深，禁用变灰
+    class RoundButton : Control
+    {
+        public Color Normal, Hover;
+        bool over, down;
+
+        public RoundButton()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
+                     ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+            Cursor = Cursors.Hand;
+            ForeColor = Color.White;
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { over = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { over = down = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { down = true; Invalidate(); base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { down = false; Invalidate(); base.OnMouseUp(e); }
+        protected override void OnEnabledChanged(EventArgs e) { Cursor = Enabled ? Cursors.Hand : Cursors.Default; Invalidate(); base.OnEnabledChanged(e); }
+        protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Parent != null ? Parent.BackColor : BackColor);
+            Color fill = !Enabled ? Color.FromArgb(0xE6, 0xDC, 0xDF) : (down || over ? Hover : Normal);
+            using (var path = Shapes.Round(new Rectangle(0, 0, Width - 1, Height - 1), Height / 2))
+            using (var b = new SolidBrush(fill)) g.FillPath(b, path);
+            TextRenderer.DrawText(g, Text, Font, ClientRectangle,
+                Enabled ? ForeColor : Color.FromArgb(0x9A, 0x8E, 0x92),
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+    }
+
+    // 白底圆角卡片，带细边
+    class CardPanel : Panel
+    {
+        public Color Border;
+        public CardPanel()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        }
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Parent != null ? Parent.BackColor : SystemColors.Control);
+            using (var path = Shapes.Round(new Rectangle(0, 0, Width - 1, Height - 1), 12))
+            {
+                using (var b = new SolidBrush(BackColor)) g.FillPath(b, path);
+                using (var p = new Pen(Border)) g.DrawPath(p, path);
             }
         }
     }
