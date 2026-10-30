@@ -6,7 +6,7 @@
 2. 备份原来的 `QQ.exe`、`dbghelp.dll`、`package.json`（只在第一次安装时备份）
 3. 放入补丁 `QQ.exe` 和 `dbghelp.dll`
 4. 把 LiteLoaderQQNT 1.4.1 装到 `%APPDATA%\LiteLoaderQQNT`
-5. 可选：装上「琉璃」和「QQ 增强」两个插件
+5. 可选：装上「琉璃」插件
 6. 改 `versions\*\resources\app\package.json`，让 QQ 启动时加载 LiteLoader
 7. 重新打开 QQ
 
