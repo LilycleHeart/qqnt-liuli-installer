@@ -286,7 +286,7 @@ namespace LiteLoaderInstaller
             if (!Directory.Exists(bk))
             {
                 Directory.CreateDirectory(bk);
-                foreach (var n in new[] { "QQ.exe", "dbghelp.dll" })
+                foreach (var n in new[] { "QQ.exe", "dbghelp.dll", "winmm.dll" })
                 {
                     string p = Path.Combine(root, n);
                     // 已经是我们的补丁文件就不算原版（比如卸载 QQ 后残留的 dbghelp.dll）
@@ -306,7 +306,10 @@ namespace LiteLoaderInstaller
             // 补丁文件
             WriteRes("QQ.exe", Path.Combine(root, "QQ.exe"));
             WriteRes("dbghelp.dll", Path.Combine(root, "dbghelp.dll"));
-            Log("已放入 QQ.exe 和 dbghelp.dll");
+            // QQEX.exe（内置浏览器）不加载 dbghelp，靠这个 winmm 代理把补丁带进去，
+            // 否则打开网页时会弹"文件已损坏"
+            WriteRes("winmm.dll", Path.Combine(root, "winmm.dll"));
+            Log("已放入 QQ.exe、dbghelp.dll 和 winmm.dll");
 
             // LiteLoader 本体（保留已有的 plugins 和 data）
             Directory.CreateDirectory(LLRoot);
@@ -341,11 +344,11 @@ namespace LiteLoaderInstaller
             string bk = Path.Combine(BackupRoot, "original");
             if (!Directory.Exists(bk)) throw new Exception("没有找到备份，无法还原。");
             StopQQ();
-            foreach (var n in new[] { "QQ.exe", "dbghelp.dll" })
+            foreach (var n in new[] { "QQ.exe", "dbghelp.dll", "winmm.dll" })
             {
                 string src = Path.Combine(bk, n), dst = Path.Combine(root, n);
                 if (File.Exists(src)) File.Copy(src, dst, true);
-                else if (n == "dbghelp.dll" && File.Exists(dst)) File.Delete(dst);
+                else if (n != "QQ.exe" && File.Exists(dst)) File.Delete(dst);
             }
             string[] apps = File.ReadAllLines(Path.Combine(bk, "apps.txt"));
             for (int i = 0; i < apps.Length; i++)

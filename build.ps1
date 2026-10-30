@@ -14,6 +14,10 @@ New-Item -ItemType Directory $payload, $dist -Force | Out-Null
 
 Copy-Item -LiteralPath $QQExe (Join-Path $payload 'QQ.exe')
 Copy-Item -LiteralPath $Dbghelp (Join-Path $payload 'dbghelp.dll')
+# winmm 代理：让 QQEX.exe（内置浏览器）也加载 dbghelp 补丁。需要 VS 2022 C++ 工具
+cmd /c "`"$here\winmm-proxy\build.cmd`"" | Out-Null
+if ($LASTEXITCODE -or -not (Test-Path "$here\winmm-proxy\winmm.dll")) { throw 'winmm 代理编译失败' }
+Copy-Item -LiteralPath "$here\winmm-proxy\winmm.dll" (Join-Path $payload 'winmm.dll')
 # LiteLoader 本体：用 loader\ 里修过的 1.4.1（官方版 store.js 用 dirent.path，新版 QQ 的 Node 里是 undefined）
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $here 'loader'), (Join-Path $payload 'LiteLoaderQQNT.zip'))
@@ -38,6 +42,7 @@ $out = Join-Path $dist 'QQNT-LiteLoader-Installer.exe'
     /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll `
     "/resource:$payload\QQ.exe,QQ.exe" `
     "/resource:$payload\dbghelp.dll,dbghelp.dll" `
+    "/resource:$payload\winmm.dll,winmm.dll" `
     "/resource:$payload\LiteLoaderQQNT.zip,LiteLoaderQQNT.zip" `
     "/resource:$payload\plugins.zip,plugins.zip" `
     "$here\src\Installer.cs"
