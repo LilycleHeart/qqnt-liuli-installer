@@ -18,12 +18,21 @@ namespace LiteLoaderInstaller
     static class Program
     {
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
+            // 无界面模式：/install [/noplugins] 或 /restore，日志写到 %APPDATA%\LiteLoaderQQNT\installer.log
+            if (args.Length > 0)
+            {
+                string mode = args[0].ToLowerInvariant();
+                bool plugins = Array.IndexOf(args, "/noplugins") < 0;
+                return_code = MainForm.Headless(mode, plugins);
+                Environment.Exit(return_code);
+            }
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new MainForm());
         }
+        static int return_code;
     }
 
     class MainForm : Form
@@ -73,8 +82,33 @@ namespace LiteLoaderInstaller
 
         void Log(string s)
         {
+            if (headlessLog != null) { headlessLog.WriteLine(s); headlessLog.Flush(); return; }
             if (InvokeRequired) { BeginInvoke(new Action<string>(Log), s); return; }
             logBox.AppendText(s + "\r\n");
+        }
+
+        StreamWriter headlessLog;
+        MainForm(StreamWriter w) { headlessLog = w; }
+
+        public static int Headless(string mode, bool plugins)
+        {
+            Directory.CreateDirectory(LLRoot);
+            using (var w = new StreamWriter(Path.Combine(LLRoot, "installer.log"), false, Utf8))
+            {
+                var f = new MainForm(w);
+                try
+                {
+                    string root = FindQQ();
+                    if (root == null) throw new Exception("找不到 QQ");
+                    w.WriteLine("QQ: " + root);
+                    if (mode == "/install") f.Install(root, plugins);
+                    else if (mode == "/restore") f.Restore(root);
+                    else throw new Exception("未知参数 " + mode);
+                    w.WriteLine("OK");
+                    return 0;
+                }
+                catch (Exception ex) { w.WriteLine("失败：" + ex.Message); return 1; }
+            }
         }
 
         void Run(bool install)
@@ -114,7 +148,8 @@ namespace LiteLoaderInstaller
                 foreach (var n in new[] { "QQ.exe", "dbghelp.dll" })
                 {
                     string p = Path.Combine(root, n);
-                    if (File.Exists(p)) File.Copy(p, Path.Combine(bk, n), true);
+                    // 已经是我们的补丁文件就不算原版（比如卸载 QQ 后残留的 dbghelp.dll）
+                    if (File.Exists(p) && !SameAsRes(n, p)) File.Copy(p, Path.Combine(bk, n), true);
                 }
                 var list = new StringBuilder();
                 for (int i = 0; i < apps.Length; i++)
@@ -237,6 +272,14 @@ namespace LiteLoaderInstaller
             var s = Assembly.GetExecutingAssembly().GetManifestResourceStream(name);
             if (s == null) throw new Exception("安装包缺少文件：" + name);
             return s;
+        }
+
+        static bool SameAsRes(string name, string file)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var s = Res(name))
+            using (var f = File.OpenRead(file))
+                return Convert.ToBase64String(sha.ComputeHash(s)) == Convert.ToBase64String(sha.ComputeHash(f));
         }
 
         static void WriteRes(string name, string dst)

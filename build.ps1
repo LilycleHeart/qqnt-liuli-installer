@@ -3,7 +3,6 @@
 param(
     [string]$QQExe = 'F:\download\Telegram Desktop\QQ.exe',
     [string]$Dbghelp = 'F:\download\Telegram Desktop\dbghelp_x64.dll',
-    [string]$LLZip = 'F:\download\Telegram Desktop\LiteLoaderQQNT.zip',
     [string]$PluginRoot = 'D:\Agent project\qq-liteloader\liuli-plugin-work'
 )
 $ErrorActionPreference = 'Stop'
@@ -15,7 +14,9 @@ New-Item -ItemType Directory $payload, $dist -Force | Out-Null
 
 Copy-Item -LiteralPath $QQExe (Join-Path $payload 'QQ.exe')
 Copy-Item -LiteralPath $Dbghelp (Join-Path $payload 'dbghelp.dll')
-Copy-Item -LiteralPath $LLZip (Join-Path $payload 'LiteLoaderQQNT.zip')
+# LiteLoader 本体：用 loader\ 里修过的 1.4.1（官方版 store.js 用 dirent.path，新版 QQ 的 Node 里是 undefined）
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $here 'loader'), (Join-Path $payload 'LiteLoaderQQNT.zip'))
 
 # 插件：只取 git 里跟踪的文件（不带壁纸等本地文件）
 $stage = Join-Path $payload 'plugins'
