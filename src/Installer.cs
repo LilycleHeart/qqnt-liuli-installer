@@ -15,8 +15,8 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyVersion("1.0.6.0")]
-[assembly: AssemblyFileVersion("1.0.6.0")]
+[assembly: AssemblyVersion("1.0.7.0")]
+[assembly: AssemblyFileVersion("1.0.7.0")]
 
 namespace LiteLoaderInstaller
 {
@@ -243,7 +243,9 @@ namespace LiteLoaderInstaller
                     if (mode == "/diag")
                     {
                         // 无界面导出诊断包：不要求 QQ 就在装好的位置，装不上时也能用
-                        w.WriteLine("诊断包: " + f.BuildDiag());
+                        string zip = f.BuildDiag();
+                        w.WriteLine("诊断包: " + zip);
+                        w.WriteLine("提交 issue: " + BuildIssueUrl(zip));
                         return 0;
                     }
                     string root = FindQQ();
@@ -351,6 +353,15 @@ namespace LiteLoaderInstaller
                 File.WriteAllText(pkg, updated, Utf8);
                 Log("已改 " + pkg);
             }
+            // 聊天记录默认放在「文档」下；「文档」被 OneDrive 接管时，云文件 + 同步锁
+            // 很容易让 QQ 报「文件系统访问异常」，提前提醒一句
+            try
+            {
+                string docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                if (docs.IndexOf("OneDrive", StringComparison.OrdinalIgnoreCase) >= 0)
+                    Log("提示：你的「文档」在 OneDrive 里，QQ 聊天记录也存在那儿。若 QQ 报「文件系统访问异常」，请到 QQ 设置 → 文件管理，把存储位置改到非 OneDrive 的目录（比如 D:\\Tencent Files）。");
+            }
+            catch { }
             StartQQ(root);
         }
 
@@ -406,9 +417,26 @@ namespace LiteLoaderInstaller
                     installBtn.Enabled = PathOk();
                     if (zip != null)
                     {
+                        string url = BuildIssueUrl(zip);
                         SetStatus("诊断包已存到桌面", Ok);
                         Log("诊断包：" + zip);
-                        try { Process.Start("explorer.exe", "/select,\"" + zip + "\""); } catch { }
+                        Log("去 GitHub 反馈：" + url);
+                        bool go = MessageBox.Show(this,
+                            "诊断包已存到桌面：" + Environment.NewLine + "    " + Path.GetFileName(zip)
+                            + Environment.NewLine + Environment.NewLine
+                            + "要不要打开 GitHub 提交问题？" + Environment.NewLine
+                            + "打开后：写一句问题现象，再把这个 zip 拖进输入框就能上传。",
+                            Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+                        if (go)
+                        {
+                            try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+                            catch (Exception ex2) { Log("打开浏览器失败：" + ex2.Message); ToggleDetail(true); }
+                        }
+                        else
+                        {
+                            // 不想发 issue 就帮他定位到文件，自己留着看
+                            try { Process.Start("explorer.exe", "/select,\"" + zip + "\""); } catch { }
+                        }
                     }
                     else { SetStatus(fail, Err); Log(fail); ToggleDetail(true); }
                 }));
@@ -436,6 +464,51 @@ namespace LiteLoaderInstaller
                 return zip;
             }
             finally { try { Directory.Delete(tmp, true); } catch { } }
+        }
+
+        // 打开 GitHub 新建 issue：预填问题模板 + 环境摘要，提醒把 zip 拖进去
+        static string BuildIssueUrl(string zipPath)
+        {
+            string qqVer = "", win = "", ver = "";
+            try
+            {
+                string root = FindQQ();
+                if (root != null)
+                {
+                    string[] vs = Directory.GetDirectories(Path.Combine(root, "versions"));
+                    if (vs.Length > 0) qqVer = Path.GetFileName(vs[vs.Length - 1]);
+                }
+            }
+            catch { }
+            try
+            {
+                using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
+                {
+                    if (k != null)
+                        win = Convert.ToString(k.GetValue("ProductName")) + " " + Convert.ToString(k.GetValue("CurrentBuild"));
+                }
+            }
+            catch { }
+            try { ver = FileVersionInfo.GetVersionInfo(Assembly.GetExecutingAssembly().Location).FileVersion; } catch { }
+
+            var body = new StringBuilder();
+            body.AppendLine("## 问题现象");
+            body.AppendLine("（写一句：QQ 报什么错 / 卡在哪一步 / 做了什么之后出现的）");
+            body.AppendLine();
+            body.AppendLine("## 诊断包");
+            body.AppendLine("请把桌面上的 `" + Path.GetFileName(zipPath) + "` 拖进这个输入框，GitHub 会自动上传。");
+            body.AppendLine("里面只有日志和环境信息，不含聊天记录内容。");
+            body.AppendLine();
+            body.AppendLine("## 环境（自动生成）");
+            body.AppendLine("- 安装器：" + (ver.Length > 0 ? ver : "未知"));
+            body.AppendLine("- QQ：" + (qqVer.Length > 0 ? qqVer : "未知"));
+            body.AppendLine("- 系统：" + (win.Length > 0 ? win : Environment.OSVersion.VersionString));
+            body.AppendLine("- 文档目录：" + Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
+
+            string title = "【安装器 " + ver + "】问题描述（改成一句话）";
+            return "https://github.com/LilycleHeart/qqnt-liuli-theme/issues/new?title="
+                + Uri.EscapeDataString(title)
+                + "&body=" + Uri.EscapeDataString(body.ToString());
         }
 
         // 收日志：只收真日志（不含 .db / 表情缓存 / 插件源码 / 备份文件）
@@ -953,7 +1026,19 @@ namespace LiteLoaderInstaller
 
         static void StartQQ(string root)
         {
-            Process.Start(new ProcessStartInfo(Path.Combine(root, "QQ.exe")) { WorkingDirectory = root, UseShellExecute = true });
+            string exe = Path.Combine(root, "QQ.exe");
+            // 安装器是提权进程，直接 Process.Start 会让 QQ 继承管理员令牌。
+            // 带管理员令牌跑 QQ 时，OneDrive 里的云文件（很多人「文档」被 OneDrive 接管，
+            // 聊天记录就在那）会访问失败，QQ 就弹「聊天记录所在文件系统访问异常」；
+            // 之后用户再用普通方式启动，文件句柄/权限也不一致。
+            // 交给 explorer 代启动，QQ 回到普通权限。
+            try
+            {
+                Process.Start(new ProcessStartInfo("explorer.exe", "\"" + exe + "\"") { UseShellExecute = true });
+                return;
+            }
+            catch { }
+            Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = root, UseShellExecute = true });
         }
 
         static Stream Res(string name)
