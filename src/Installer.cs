@@ -356,6 +356,13 @@ namespace LiteLoaderInstaller
                 string src = Path.Combine(bk, "package." + i + ".json");
                 if (apps[i].Trim().Length > 0 && File.Exists(src) && Directory.Exists(apps[i]))
                     File.Copy(src, Path.Combine(apps[i], "package.json"), true);
+                // 安装时多建的 app_launcher 也删掉，app 目录回到原样（多出的文件夹可能让 QQ 自检报「文件已损坏」）
+                string launcherDir = Path.Combine(apps[i].Trim(), "app_launcher");
+                if (apps[i].Trim().Length > 0 && Directory.Exists(launcherDir))
+                {
+                    try { Directory.Delete(launcherDir, true); Log("已删除 " + launcherDir); }
+                    catch (Exception e) { Log("删除 " + launcherDir + " 失败：" + e.Message); }
+                }
             }
             Directory.Delete(bk, true);
             Log("已还原 QQ.exe、dbghelp.dll 和 package.json。插件和数据保留在 " + LLRoot);
@@ -400,7 +407,12 @@ namespace LiteLoaderInstaller
             foreach (var name in new[] { "QQ", "QQEX" })
                 foreach (var p in Process.GetProcessesByName(name))
                     try { p.Kill(); } catch { }
-            for (int i = 0; i < 25 && Process.GetProcessesByName("QQ").Length > 0; i++) Thread.Sleep(1000);
+            for (int i = 0; i < 25 && Process.GetProcessesByName("QQ").Length > 0; i++)
+            {
+                // 子进程可能晚一步冒出来或第一次没杀掉，每秒再杀一遍
+                foreach (var p in Process.GetProcessesByName("QQ")) try { p.Kill(); } catch { }
+                Thread.Sleep(1000);
+            }
             if (Process.GetProcessesByName("QQ").Length > 0) throw new Exception("QQ 关不掉，请手动退出 QQ 后再试。");
             Thread.Sleep(800);
             Log("QQ 已关闭");
