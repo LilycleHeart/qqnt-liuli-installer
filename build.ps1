@@ -23,15 +23,15 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $here 'loader'), (Join-Path $payload 'LiteLoaderQQNT.zip'))
 
 # 插件：只取 git 里跟踪的文件（不带壁纸等本地文件）
+# 本地仓库目录是 qqnt-liuli-theme（对齐 GitHub 仓库名）；插件目录名必须保持 liuli-dsh-theme（manifest slug）
 $stage = Join-Path $payload 'plugins'
-foreach ($p in 'liuli-dsh-theme') {
-    $src = Join-Path $PluginRoot $p
-    $tar = Join-Path $payload "$p.zip"
-    git -C $src archive --format=zip --prefix="$p/" -o $tar HEAD
-    if ($LASTEXITCODE) { throw "git archive 失败: $p" }
-    Expand-Archive -LiteralPath $tar -DestinationPath $stage -Force
-    Remove-Item $tar
-}
+$p = 'liuli-dsh-theme'
+$src = Join-Path $PluginRoot 'qqnt-liuli-theme'
+$tar = Join-Path $payload "$p.zip"
+git -C $src archive --format=zip --prefix="$p/" -o $tar HEAD
+if ($LASTEXITCODE) { throw "git archive 失败: $p" }
+Expand-Archive -LiteralPath $tar -DestinationPath $stage -Force
+Remove-Item $tar
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory($stage, (Join-Path $payload 'plugins.zip'))
 
@@ -39,7 +39,7 @@ $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $out = Join-Path $dist 'QQNT-LiteLoader-Installer.exe'
 & $csc /nologo /target:winexe /optimize+ /codepage:65001 `
     "/out:$out" "/win32manifest:$here\src\app.manifest" `
-    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll `
+    /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Management.dll `
     "/resource:$payload\QQ.exe,QQ.exe" `
     "/resource:$payload\dbghelp.dll,dbghelp.dll" `
     "/resource:$payload\winmm.dll,winmm.dll" `

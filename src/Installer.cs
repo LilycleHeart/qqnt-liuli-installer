@@ -2,16 +2,21 @@
 // 内置：官方补丁 QQ.exe、dbghelp.dll、LiteLoaderQQNT 本体、琉璃与 QQ 增强插件。
 // 编译：见 build.ps1（用 Windows 自带的 .NET Framework csc，无需另装运行库）。
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
+
+[assembly: AssemblyVersion("1.0.6.0")]
+[assembly: AssemblyFileVersion("1.0.6.0")]
 
 namespace LiteLoaderInstaller
 {
@@ -52,7 +57,7 @@ namespace LiteLoaderInstaller
         TextBox qqBox;
         CheckBox pluginBox;
         RoundButton installBtn;
-        LinkLabel restoreBtn, browseBtn, detailBtn;
+        LinkLabel restoreBtn, browseBtn, detailBtn, diagBtn;
         Label statusLbl;
         ProgressBar bar;
         TextBox logBox;
@@ -87,6 +92,11 @@ namespace LiteLoaderInstaller
                 Text = "一键装好 LiteLoader 和琉璃主题", ForeColor = TextSub,
                 Location = new Point(30, 68), AutoSize = true
             };
+
+            // 右上角：一键导出诊断包（装不上或 QQ 报错时让用户点这里）
+            diagBtn = MakeLink("导出诊断包", 0);
+            diagBtn.Location = new Point(452 - diagBtn.PreferredWidth, 32);
+            diagBtn.LinkClicked += delegate { ExportDiag(); };
 
             // 卡片：QQ 位置 + 插件开关
             var card = new CardPanel { Location = new Point(28, 104), Size = new Size(424, 116), BackColor = CardBg, Border = Line };
@@ -144,7 +154,7 @@ namespace LiteLoaderInstaller
                 Location = new Point(28, 348), Size = new Size(424, 168), Visible = false
             };
 
-            Controls.AddRange(new Control[] { title, sub, card, installBtn, bar, statusLbl, restoreBtn, detailBtn, logBox });
+            Controls.AddRange(new Control[] { title, sub, diagBtn, card, installBtn, bar, statusLbl, restoreBtn, detailBtn, logBox });
             CheckPath();
         }
 
@@ -230,6 +240,12 @@ namespace LiteLoaderInstaller
                 var f = new MainForm(w);
                 try
                 {
+                    if (mode == "/diag")
+                    {
+                        // 无界面导出诊断包：不要求 QQ 就在装好的位置，装不上时也能用
+                        w.WriteLine("诊断包: " + f.BuildDiag());
+                        return 0;
+                    }
                     string root = FindQQ();
                     if (root == null) throw new Exception("找不到 QQ");
                     w.WriteLine("QQ: " + root);
@@ -367,6 +383,523 @@ namespace LiteLoaderInstaller
             Directory.Delete(bk, true);
             Log("已还原 QQ.exe、dbghelp.dll 和 package.json。插件和数据保留在 " + LLRoot);
             StartQQ(root);
+        }
+
+        // ---------- 诊断包 ----------
+        // 用户点一下「导出诊断包」，把 QQ 日志 + 环境信息打成桌面上的 zip。
+        // 只读；只收日志和元数据，绝不收集聊天记录库内容。
+
+        void ExportDiag()
+        {
+            diagBtn.Enabled = false;
+            installBtn.Enabled = false;
+            SetStatus("正在收集诊断包…", TextSub);
+            Log("开始收集诊断包（只读，不含聊天记录）");
+            new Thread(delegate ()
+            {
+                string zip = null, fail = null;
+                try { zip = BuildDiag(); }
+                catch (Exception ex) { fail = "诊断包生成失败：" + ex.Message; }
+                BeginInvoke(new Action(delegate
+                {
+                    diagBtn.Enabled = true;
+                    installBtn.Enabled = PathOk();
+                    if (zip != null)
+                    {
+                        SetStatus("诊断包已存到桌面", Ok);
+                        Log("诊断包：" + zip);
+                        try { Process.Start("explorer.exe", "/select,\"" + zip + "\""); } catch { }
+                    }
+                    else { SetStatus(fail, Err); Log(fail); ToggleDetail(true); }
+                }));
+            }) { IsBackground = true }.Start();
+        }
+
+        string BuildDiag()
+        {
+            string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            string tmp = Path.Combine(Path.GetTempPath(), "liuli-diag-" + stamp);
+            Directory.CreateDirectory(tmp);
+            try
+            {
+                var info = new StringBuilder();
+                info.AppendLine("========== 琉璃 QQ · 诊断包 ==========");
+                CollectLogs(tmp, info);
+                WriteEnvInfo(info);
+                File.WriteAllText(Path.Combine(tmp, "environment.txt"), info.ToString(), Utf8);
+
+                string zip = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                    "QQ诊断包-" + stamp + ".zip");
+                if (File.Exists(zip)) File.Delete(zip);
+                ZipFile.CreateFromDirectory(tmp, zip, CompressionLevel.Optimal, false);
+                return zip;
+            }
+            finally { try { Directory.Delete(tmp, true); } catch { } }
+        }
+
+        // 收日志：只收真日志（不含 .db / 表情缓存 / 插件源码 / 备份文件）
+        static void CollectLogs(string tmp, StringBuilder info)
+        {
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            long total = 0;
+            //                        目录                                             打包名        单文件MB 最近N天 扩展名                       上限 必须含 递归
+            total += CollectOne(tmp, info, Path.Combine(appData, @"QQ\log"),               "QQ-log",       5, 30, new[] { ".log", ".txt" },              50, null, true);
+            total += CollectOne(tmp, info, Path.Combine(appData, @"QQ\arks"),              "QQ-arks",      3,  7, new[] { ".log", ".txt", ".json" },       30, null, true);
+            total += CollectOne(tmp, info, Path.Combine(appData, @"QQ\Crashpad\reports"),  "QQ-crashpad",  2,  7, new[] { ".txt", ".log" },               10, null, true);
+            total += CollectOne(tmp, info, Path.Combine(appData, @"Tencent\Logs"),         "Tencent-Logs", 3,  3, new[] { ".log", ".tlg", ".txt" },       10, "QQ", true);
+            // LiteLoader 只看它自己的日志，不碰 data（用户表情）/ plugins / installer-backup
+            total += CollectOne(tmp, info, Path.Combine(appData, "LiteLoaderQQNT"),        "LiteLoader",   2,  0, new[] { ".log", ".txt" },              20, null, false);
+            info.AppendLine("日志合计约 " + (total / 1024) + " KB");
+        }
+
+        static long CollectOne(string tmp, StringBuilder info, string src, string packName,
+            int maxFileMB, int sinceDays, string[] exts, int maxFiles, string mustContain, bool recurse)
+        {
+            if (!Directory.Exists(src)) { info.AppendLine("日志目录不存在: " + src); return 0; }
+            string srcFull = src.TrimEnd('\\');
+            DateTime cutoff = sinceDays > 0 ? DateTime.Now.AddDays(-sinceDays) : DateTime.MinValue;
+            long maxBytes = maxFileMB * 1024L * 1024L;
+
+            var cands = new List<FileInfo>();
+            foreach (var f in SafeFiles(src))
+            {
+                if (!recurse)
+                {
+                    string parent = (f.DirectoryName == null ? "" : f.DirectoryName.TrimEnd('\\'));
+                    if (!string.Equals(parent, srcFull, StringComparison.OrdinalIgnoreCase)) continue;
+                }
+                if (f.Length > maxBytes) continue;
+                if (f.LastWriteTime < cutoff) continue;
+                bool extOk = false;
+                foreach (var e in exts) if (f.Extension.Equals(e, StringComparison.OrdinalIgnoreCase)) { extOk = true; break; }
+                if (!extOk) continue;
+                if (mustContain != null && f.Name.IndexOf(mustContain, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                cands.Add(f);
+            }
+            cands.Sort(delegate (FileInfo a, FileInfo b) { return b.LastWriteTime.CompareTo(a.LastWriteTime); });
+
+            long got = 0;
+            int n = 0;
+            foreach (var f in cands)
+            {
+                if (n >= maxFiles) break;
+                string rel = f.FullName.Substring(srcFull.Length).TrimStart('\\');
+                if (SafeCopy(f.FullName, Path.Combine(tmp, packName, rel))) { got += f.Length; n++; }
+            }
+            info.AppendLine("日志: " + src + "  -> " + packName + "，" + n + " 个文件，" + (got / 1024) + " KB");
+            return got;
+        }
+
+        static IEnumerable<FileInfo> SafeFiles(string dir)
+        {
+            var stack = new Stack<string>();
+            stack.Push(dir);
+            while (stack.Count > 0)
+            {
+                string d = stack.Pop();
+                FileInfo[] files;
+                try { files = new DirectoryInfo(d).GetFiles(); } catch { continue; }
+                foreach (var f in files) yield return f;
+                string[] subs;
+                try { subs = Directory.GetDirectories(d); } catch { continue; }
+                foreach (var s in subs)
+                {
+                    string leaf = Path.GetFileName(s);
+                    if (leaf == "Cache" || leaf == "Code Cache" || leaf == "blob_storage" || leaf == "GPUCache") continue;
+                    stack.Push(s);
+                }
+            }
+        }
+
+        static bool SafeCopy(string src, string dst)
+        {
+            try
+            {
+                string dir = Path.GetDirectoryName(dst);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                using (var s = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (var d = File.Create(dst)) s.CopyTo(d);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        static string Sha256Of(string path)
+        {
+            try
+            {
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                using (var f = File.OpenRead(path))
+                    return BitConverter.ToString(sha.ComputeHash(f)).Replace("-", "");
+            }
+            catch { return "(读取失败)"; }
+        }
+
+        static string PatchFlag(string name, string path)
+        {
+            try { return SameAsRes(name, path) ? "是（安装器内置补丁）" : "否（不是内置补丁）"; }
+            catch { return "未知"; }
+        }
+
+        static void WriteEnvInfo(StringBuilder info)
+        {
+            info.AppendLine();
+            info.AppendLine("---------- 环境 ----------");
+            info.AppendLine("时间: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            info.AppendLine("计算机: " + Environment.MachineName + "   用户: " + Environment.UserName);
+            info.AppendLine("系统: " + Environment.OSVersion.VersionString + "   64位进程: " + Environment.Is64BitProcess);
+            try
+            {
+                using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
+                {
+                    if (k != null)
+                        info.AppendLine("Windows: " + k.GetValue("ProductName") + " " + k.GetValue("DisplayVersion")
+                            + "  Build " + k.GetValue("CurrentBuild") + "." + k.GetValue("UBR"));
+                }
+            }
+            catch { }
+            try { info.AppendLine("安装器版本: " + FileVersionInfo.GetVersionInfo(Assembly.GetExecutingAssembly().Location).FileVersion); } catch { }
+            info.AppendLine("文档目录: " + Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments));
+
+            info.AppendLine();
+            info.AppendLine("---------- QQ 安装 ----------");
+            string root = null;
+            try { root = FindQQ(); } catch { }
+            info.AppendLine("安装目录: " + (root == null ? "未找到" : root));
+            if (root != null)
+            {
+                try
+                {
+                    foreach (var v in Directory.GetDirectories(Path.Combine(root, "versions")))
+                    {
+                        string vj = Path.Combine(v, "version.json");
+                        string ver = "";
+                        try { if (File.Exists(vj)) ver = File.ReadAllText(vj).Replace("\r", " ").Replace("\n", " "); } catch { }
+                        info.AppendLine("  版本目录: " + Path.GetFileName(v) + "   " + ver);
+                    }
+                }
+                catch (Exception ex) { info.AppendLine("  读 versions 失败: " + ex.Message); }
+
+                foreach (var n in new[] { "QQ.exe", "dbghelp.dll", "winmm.dll" })
+                {
+                    string p = Path.Combine(root, n);
+                    if (!File.Exists(p)) { info.AppendLine("  " + n + ": 不存在"); continue; }
+                    var fi = new FileInfo(p);
+                    info.AppendLine("  " + n + ": " + fi.Length + " 字节  修改 " + fi.LastWriteTime);
+                    info.AppendLine("      SHA256 " + Sha256Of(p) + "   内置补丁=" + PatchFlag(n, p));
+                }
+            }
+            info.AppendLine("原版备份: " + (Directory.Exists(Path.Combine(BackupRoot, "original")) ? Path.Combine(BackupRoot, "original") : "不存在"));
+
+            string log = Path.Combine(LLRoot, "installer.log");
+            if (File.Exists(log))
+            {
+                info.AppendLine();
+                info.AppendLine("---------- 安装器日志（尾部 60 行）----------");
+                try
+                {
+                    var lines = new List<string>();
+                    using (var fs = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    using (var sr = new StreamReader(fs, Utf8))
+                    {
+                        string ln;
+                        while ((ln = sr.ReadLine()) != null) lines.Add(ln);
+                    }
+                    int from = Math.Max(0, lines.Count - 60);
+                    if (lines.Count == 0) info.AppendLine("  (日志为空)");
+                    for (int i = from; i < lines.Count; i++) info.AppendLine("  " + lines[i]);
+                }
+                catch (Exception ex) { info.AppendLine("  读取失败: " + ex.Message); }
+            }
+
+            info.AppendLine();
+            info.AppendLine("---------- QQ 进程（多个主进程会抢同一份聊天记录库）----------");
+            try
+            {
+                var searcher = new System.Management.ManagementObjectSearcher(
+                    "SELECT ProcessId, Name, CommandLine, ExecutablePath FROM Win32_Process WHERE Name='QQ.exe' OR Name='QQEX.exe'");
+                int mains = 0;
+                foreach (System.Management.ManagementObject o in searcher.Get())
+                {
+                    int pid = Convert.ToInt32(o["ProcessId"]);
+                    string nm = Convert.ToString(o["Name"]);
+                    string cmd = Convert.ToString(o["CommandLine"]);
+                    string exe = Convert.ToString(o["ExecutablePath"]);
+                    // 子进程（--type=xxx）不算主进程；命令行读不到时用“有没有主窗口”兜底
+                    bool isMain = string.IsNullOrEmpty(cmd) ? HasMainWindow(pid) : cmd.IndexOf("--type=") < 0;
+                    if (isMain) mains++;
+                    info.AppendLine("  PID " + pid + "  " + nm + "  权限: " + Elevated(pid) + (isMain ? "  [主进程]" : ""));
+                    info.AppendLine("      exe: " + exe);
+                    if (!string.IsNullOrEmpty(cmd))
+                        info.AppendLine("      cmd: " + (cmd.Length > 300 ? cmd.Substring(0, 300) + "..." : cmd));
+                }
+                info.AppendLine("  QQ 主进程数: " + mains + (mains > 1 ? "  <<== 超过 1 个，双实例抢库会直接弹此报错" : ""));
+            }
+            catch (Exception ex) { info.AppendLine("  查询进程失败（可能没有管理员权限）: " + ex.Message); }
+
+            info.AppendLine();
+            info.AppendLine("---------- 聊天记录目录（只列元数据，不含内容）----------");
+            var dirs = DataDirs();
+            if (dirs.Count == 0) info.AppendLine("  没找到 nt_qq 数据目录");
+            foreach (var nt in dirs) DescribeDataDir(info, nt);
+
+            info.AppendLine();
+            info.AppendLine("---------- 磁盘 ----------");
+            foreach (var d in DriveInfo.GetDrives())
+            {
+                try
+                {
+                    if (!d.IsReady) { info.AppendLine("  " + d.Name + "  " + d.DriveType + "  (未就绪)"); continue; }
+                    info.AppendLine("  " + d.Name + "  " + d.DriveType + "  " + d.DriveFormat
+                        + "  剩余 " + (d.AvailableFreeSpace / 1024 / 1024) + " MB / 共 " + (d.TotalSize / 1024 / 1024) + " MB");
+                }
+                catch { }
+            }
+
+            info.AppendLine();
+            info.AppendLine("---------- 受控文件夹访问（会拦被替换过的 QQ.exe 写“文档”）----------");
+            try
+            {
+                using (var k = Registry.LocalMachine.OpenSubKey(
+                    @"SOFTWARE\Microsoft\Windows Defender\Windows Defender Exploit Guard\Controlled Folder Access"))
+                {
+                    object v = k == null ? null : k.GetValue("EnableControlledFolderAccess");
+                    info.AppendLine("  EnableControlledFolderAccess = " + (v == null ? "(未设置)" : v.ToString()) + "   (0=关 1=开 2=仅审计)");
+                }
+                using (var k = Registry.LocalMachine.OpenSubKey(
+                    @"SOFTWARE\Microsoft\Windows Defender\Windows Defender Exploit Guard\Controlled Folder Access\ProtectedFolders"))
+                {
+                    if (k != null) foreach (var s in k.GetSubKeyNames()) info.AppendLine("  受保护文件夹: " + s);
+                }
+            }
+            catch (Exception ex) { info.AppendLine("  读取失败: " + ex.Message); }
+
+            info.AppendLine();
+            info.AppendLine("---------- Defender 拦截事件（1123/1124/1127/1128）----------");
+            try
+            {
+                using (var lg = new EventLog("Microsoft-Windows-Windows Defender/Operational"))
+                {
+                    int shown = 0, count = lg.Entries.Count, start = Math.Max(0, count - 3000);
+                    for (int i = count - 1; i >= start && shown < 10; i--)
+                    {
+                        var e = lg.Entries[i];
+                        int id = (int)((uint)e.InstanceId & 0xFFFF);
+                        if (id != 1123 && id != 1124 && id != 1127 && id != 1128) continue;
+                        shown++;
+                        info.AppendLine("  " + e.TimeGenerated.ToString("yyyy-MM-dd HH:mm:ss") + "  事件 " + id);
+                        string[] lines = (e.Message == null ? "" : e.Message).Split('\n');
+                        for (int j = 0; j < Math.Min(lines.Length, 6); j++) info.AppendLine("      " + lines[j].TrimEnd('\r'));
+                    }
+                    if (shown == 0) info.AppendLine("  无记录");
+                }
+            }
+            catch (Exception ex) { info.AppendLine("  读取失败（常见于没有管理员权限或没启用 Defender）: " + ex.Message); }
+
+            info.AppendLine();
+            info.AppendLine("---------- 最近 3 天 Application 错误事件 ----------");
+            try
+            {
+                using (var lg = new EventLog("Application"))
+                {
+                    int shown = 0, count = lg.Entries.Count, start = Math.Max(0, count - 3000);
+                    for (int i = count - 1; i >= start && shown < 12; i--)
+                    {
+                        var e = lg.Entries[i];
+                        if (!string.IsNullOrEmpty(e.Source) && (e.Source.Contains("Application Error") || e.Source.Contains("Application Hang")) == false) continue;
+                        int id = (int)((uint)e.InstanceId & 0xFFFF);
+                        if (id != 1000 && id != 1002) continue;
+                        // 只看和 QQ 有关的崩溃，避免 Steam/游戏等无关条目
+                        if (e.Message == null || e.Message.IndexOf("QQ", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        shown++;
+                        info.AppendLine("  " + e.TimeGenerated.ToString("yyyy-MM-dd HH:mm:ss") + "  " + e.Source + "  " + id);
+                        string[] lines = (e.Message == null ? "" : e.Message).Split('\n');
+                        for (int j = 0; j < Math.Min(lines.Length, 4); j++) info.AppendLine("      " + lines[j].TrimEnd('\r'));
+                    }
+                    if (shown == 0) info.AppendLine("  无记录");
+                }
+            }
+            catch (Exception ex) { info.AppendLine("  读取失败: " + ex.Message); }
+        }
+
+        static void DescribeDataDir(StringBuilder info, string nt)
+        {
+            info.AppendLine();
+            info.AppendLine("  ---- " + nt);
+            try
+            {
+                var di = new DriveInfo(Path.GetPathRoot(nt));
+                info.AppendLine("      盘: " + di.Name + "  类型 " + di.DriveType + "  格式 " + di.DriveFormat
+                    + "  剩余 " + (di.AvailableFreeSpace / 1024 / 1024) + " MB / 共 " + (di.TotalSize / 1024 / 1024) + " MB");
+                if (di.DriveType == DriveType.Removable || di.DriveType == DriveType.Network)
+                    info.AppendLine("      <<== 聊天记录在可移动盘/网络盘上，这是该报错最常见的原因");
+            }
+            catch (Exception ex) { info.AppendLine("      读盘失败: " + ex.Message); }
+            try
+            {
+                var dir = new DirectoryInfo(nt);
+                info.AppendLine("      属性: " + dir.Attributes + "  最后修改: " + dir.LastWriteTime);
+                var acl = Directory.GetAccessControl(nt);
+                info.AppendLine("      所有者: " + acl.GetOwner(typeof(System.Security.Principal.NTAccount)));
+                foreach (System.Security.AccessControl.FileSystemAccessRule r in
+                    acl.GetAccessRules(true, false, typeof(System.Security.Principal.NTAccount)))
+                {
+                    info.AppendLine("      非继承ACL: " + r.IdentityReference + "  " + r.FileSystemRights + "  " + r.AccessControlType);
+                }
+            }
+            catch (Exception ex) { info.AppendLine("      ACL 读取失败: " + ex.Message); }
+
+            string db = Path.Combine(nt, "nt_db");
+            if (!Directory.Exists(db)) { info.AppendLine("      (没有 nt_db 目录)"); return; }
+            try
+            {
+                FileInfo[] fs = new DirectoryInfo(db).GetFiles();
+                Array.Sort(fs, delegate (FileInfo a, FileInfo b) { return b.Length.CompareTo(a.Length); });
+                info.AppendLine("      ---- nt_db 文件（前 12 大）----");
+                int n = 0;
+                foreach (var f in fs)
+                {
+                    info.AppendLine("      " + f.Name.PadRight(34) + f.Length.ToString("N0").PadLeft(15) + " 字节  " + f.LastWriteTime);
+                    if (++n >= 12) break;
+                }
+                foreach (var f in fs)
+                {
+                    if (f.Name.EndsWith("-wal") || f.Name.EndsWith("-shm") || f.Name.EndsWith("-journal"))
+                        info.AppendLine("      辅助文件: " + f.Name.PadRight(30) + f.Length.ToString("N0").PadLeft(12) + " 字节  " + f.LastWriteTime);
+                }
+            }
+            catch (Exception ex) { info.AppendLine("      列文件失败: " + ex.Message); }
+
+            string main = Path.Combine(db, "nt_msg.db");
+            if (File.Exists(main))
+            {
+                info.AppendLine("      ---- 谁正在占用 nt_msg.db ----");
+                info.AppendLine(WhoLocks(main));
+            }
+        }
+
+        static List<string> DataDirs()
+        {
+            var res = new List<string>();
+            var bases = new List<string>();
+            bases.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Tencent Files"));
+            foreach (var d in DriveInfo.GetDrives())
+            {
+                if (d.DriveType != DriveType.Fixed && d.DriveType != DriveType.Removable) continue;
+                bases.Add(Path.Combine(d.Name, "Tencent Files"));
+                bases.Add(Path.Combine(d.Name, @"Documents\Tencent Files"));
+            }
+            foreach (var b in bases)
+            {
+                if (!Directory.Exists(b)) continue;
+                string[] subs;
+                try { subs = Directory.GetDirectories(b); } catch { continue; }
+                foreach (var s in subs)
+                {
+                    string nt = Path.Combine(s, "nt_qq");
+                    if (Directory.Exists(nt) && !res.Contains(nt)) res.Add(nt);
+                }
+            }
+            return res;
+        }
+
+        // ---------- 诊断包：系统 API ----------
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        static extern bool OpenProcessToken(IntPtr proc, uint access, out IntPtr token);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        static extern bool GetTokenInformation(IntPtr token, int cls, out int value, int len, out int ret);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool CloseHandle(IntPtr h);
+
+        // 命令行读不到时，用“有没有主窗口”判断主进程
+        static bool HasMainWindow(int pid)
+        {
+            try
+            {
+                using (var p = Process.GetProcessById(pid)) return p.MainWindowHandle != IntPtr.Zero;
+            }
+            catch { return false; }
+        }
+
+        // 装完的 QQ 是不是带着管理员令牌在跑
+        static string Elevated(int pid)
+        {
+            IntPtr h = OpenProcess(0x1000, false, pid);   // PROCESS_QUERY_LIMITED_INFORMATION
+            if (h == IntPtr.Zero) return "未知(打不开进程)";
+            try
+            {
+                IntPtr t;
+                if (!OpenProcessToken(h, 0x0008, out t)) return "未知(读令牌失败)";   // TOKEN_QUERY
+                try
+                {
+                    int value, ret;
+                    if (!GetTokenInformation(t, 20, out value, 4, out ret)) return "未知";   // TokenElevation
+                    return value != 0 ? "已提升(管理员)" : "普通用户";
+                }
+                finally { CloseHandle(t); }
+            }
+            finally { CloseHandle(h); }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct RM_UNIQUE_PROCESS
+        {
+            public int dwProcessId;
+            public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime;
+        }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct RM_PROCESS_INFO
+        {
+            public RM_UNIQUE_PROCESS Process;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string strAppName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string strServiceShortName;
+            public int ApplicationType;
+            public uint AppStatus;
+            public uint TSSessionId;
+            [MarshalAs(UnmanagedType.Bool)] public bool bRestartable;
+        }
+        [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+        static extern int RmStartSession(out uint handle, int flags, StringBuilder key);
+        [DllImport("rstrtmgr.dll")]
+        static extern int RmRegisterResources(uint handle, uint nFiles, string[] files,
+            uint nApps, ref RM_UNIQUE_PROCESS apps, uint nServices, string[] services);
+        [DllImport("rstrtmgr.dll")]
+        static extern int RmGetList(uint handle, out uint needed, ref uint count,
+            [In, Out] RM_PROCESS_INFO[] procs, ref uint reasons);
+        [DllImport("rstrtmgr.dll")]
+        static extern int RmEndSession(uint handle);
+
+        // 谁锁着这个文件（另一个 QQ、NapCat、网盘、杀软都会出现在这里）
+        static string WhoLocks(string path)
+        {
+            var sb = new StringBuilder();
+            uint session;
+            var key = new StringBuilder(256);
+            int r = RmStartSession(out session, 0, key);
+            if (r != 0) return "      (RmStartSession 失败 " + r + ")";
+            try
+            {
+                string[] files = new string[] { path };
+                RM_UNIQUE_PROCESS dummy = new RM_UNIQUE_PROCESS();
+                r = RmRegisterResources(session, 1, files, 0, ref dummy, 0, null);
+                if (r != 0) return "      (查询失败 " + r + (r == 5 ? "，需要管理员权限" : "") + ")";
+                uint needed = 0, count = 0, reasons = 0;
+                RmGetList(session, out needed, ref count, null, ref reasons);
+                if (needed == 0) return "      (没有其它进程占用)";
+                var arr = new RM_PROCESS_INFO[needed];
+                count = needed;
+                if (RmGetList(session, out needed, ref count, arr, ref reasons) == 0)
+                {
+                    for (int i = 0; i < count; i++)
+                        sb.AppendLine("      PID " + arr[i].Process.dwProcessId + "  " + arr[i].strAppName + "  type=" + arr[i].ApplicationType);
+                }
+                return sb.ToString();
+            }
+            finally { RmEndSession(session); }
         }
 
         // ---------- 工具 ----------
