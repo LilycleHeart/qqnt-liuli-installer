@@ -15,8 +15,8 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyVersion("1.0.7.0")]
-[assembly: AssemblyFileVersion("1.0.7.0")]
+[assembly: AssemblyVersion("1.0.8.0")]
+[assembly: AssemblyFileVersion("1.0.8.0")]
 
 namespace LiteLoaderInstaller
 {
@@ -664,6 +664,50 @@ namespace LiteLoaderInstaller
                 }
             }
             info.AppendLine("原版备份: " + (Directory.Exists(Path.Combine(BackupRoot, "original")) ? Path.Combine(BackupRoot, "original") : "不存在"));
+
+            info.AppendLine();
+            info.AppendLine("---------- LiteLoader 插件（判断插件装没装上）----------");
+            try
+            {
+                string plugins = Path.Combine(LLRoot, "plugins");
+                if (!Directory.Exists(plugins))
+                {
+                    info.AppendLine("  plugins 目录不存在：" + plugins + "   <<== 插件没装");
+                }
+                else
+                {
+                    string[] pluginDirs = Directory.GetDirectories(plugins);
+                    info.AppendLine("  plugins 目录: " + plugins + "，共 " + pluginDirs.Length + " 个插件");
+                    foreach (var d in pluginDirs)
+                    {
+                        string name = Path.GetFileName(d);
+                        string mf = Path.Combine(d, "manifest.json");
+                        info.AppendLine("  [" + name + "]");
+                        if (!File.Exists(mf)) { info.AppendLine("      缺 manifest.json   <<== 这个插件不会被加载"); continue; }
+                        bool bom = false;
+                        try
+                        {
+                            byte[] head = new byte[3];
+                            using (var fs = File.OpenRead(mf)) fs.Read(head, 0, 3);
+                            bom = head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF;
+                        }
+                        catch { }
+                        info.AppendLine("      manifest.json " + new FileInfo(mf).Length + " 字节  UTF-8 BOM=" +
+                            (bom ? "有   <<== LiteLoader 解析会失败" : "无"));
+                        try
+                        {
+                            string json = File.ReadAllText(mf).Replace("\r", " ").Replace("\n", " ");
+                            if (json.Length > 400) json = json.Substring(0, 400) + "...";
+                            info.AppendLine("      " + json);
+                        }
+                        catch (Exception ex2) { info.AppendLine("      读 manifest 失败: " + ex2.Message); }
+                    }
+                    // 插件是否被禁用（LiteLoader 用 .disabled 之类的标记）
+                    foreach (var f in Directory.GetFiles(plugins))
+                        info.AppendLine("  其它文件: " + Path.GetFileName(f));
+                }
+            }
+            catch (Exception ex) { info.AppendLine("  读取插件目录失败: " + ex.Message); }
 
             string log = Path.Combine(LLRoot, "installer.log");
             if (File.Exists(log))
