@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const electron = require("electron");
+const logger = require("./logger.js");
 const default_config = require("../common/static/config.json");
 
 const AdmZip = (() => {
@@ -10,6 +11,8 @@ const AdmZip = (() => {
 })();
 
 function showErrorDialog(title, message) {
+    // 弹窗前先落盘：这就是 LiteLoader 自己弹的启动报错正文，诊断包能直接抓到
+    try { logger.error("[dialog] " + title, message); } catch { }
     const showDialog = () => electron.dialog.showMessageBox(null, {
         type: "error",
         title: "LiteLoaderQQNT",
