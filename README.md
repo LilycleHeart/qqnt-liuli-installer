@@ -3,14 +3,23 @@
 一个 exe，双击后点「一键安装」：
 
 1. 关闭 QQ
-2. 备份原来的 `QQ.exe`、`dbghelp.dll`、`package.json`（只在第一次安装时备份）
-3. 放入补丁 `QQ.exe`、`dbghelp.dll`，以及 `winmm.dll`（让 QQ 内置浏览器 QQEX.exe 也加载补丁，否则打开网页会弹"文件已损坏"）
+2. 备份原版 `package.json`（每个 `versions\*\resources\app` 一份，只在第一次安装时备份）
+3. 在 QQ 根目录放 `winmm.dll`（代理，负责把 hook 带进 QQEX.exe 等子进程）、
+   `dbghelp.dll`（运行时 hook）和 `hook.ini`（`mode = active` / `match = skipfullreads:1`）
 4. 把 LiteLoaderQQNT 1.4.1 装到 `%APPDATA%\LiteLoaderQQNT`
 5. 可选：装上「琉璃」插件
-6. 改 `versions\*\resources\app\package.json`，让 QQ 启动时加载 LiteLoader
+6. 每个 `versions\*\resources\app` 里加两个文件：`liuli_loader.js`（引导器）和
+   `package.patched.json`（从原版 `package.json` 生成，只把 `main` 换成 `./liuli_loader.js`）
 7. 重新打开 QQ
 
-「还原」按钮把备份的文件拷回去。插件和数据留着不删。
+**一个被腾讯签名的文件都不改**（`application.asar` / `wrapper.node` / `major.node` / `package.json`），
+**也不替换 `QQ.exe`**：hook 只在 QQ 读 `package.json` 的 `main` 那一次把内容换成 `package.patched.json`，
+前面那次完整性校验放行原版。签名清单照常通过，所以主窗口、频道、腾讯文档（exApp）都不会再弹「文件已损坏」。
+
+「还原」按钮把安装器加的这些文件删掉（`winmm.dll` / `dbghelp.dll` / `hook.ini` /
+`liuli_loader.js` / `package.patched.json`）。以前用旧安装器装过的（`QQ.exe` 被降级、
+`package.json` 的 `main` 被改成 `./app_launcher/LiteLoader.js`、多出 `app_launcher` 目录），
+安装和还原时都会自动用备份改回原版。插件和数据留着不删。
 
 ## 导出诊断包（用户来报问题时）
 
@@ -64,10 +73,14 @@ plugin-diag/<name>.zip 插件设置页导出的最新诊断包（可选；内容
   `src/main/logger.js` 写的 tee 日志）会被收进包的 `LiteLoader/` 目录；自动体检会检查
   `[Main] … 加载失败`、`[dialog]`（LiteLoader 自己弹的报错正文）、`[fatal]`（主进程未捕获异常），
   命中就提示「看 LiteLoader/liteLoader.log 的 [Main]/[dialog] 行」，时间线也会并进去
-- **QQ 应用打补丁状态**：每个 `versions/*/resources/app` 的 `main`、`app_launcher/LiteLoader.js`
-  内容、`package.json` 是否 BOM/能解析、`versions/config.json`、运行中 QQ 是否就是安装目录这份；
-  补丁文件「内置补丁」判断保留精确哈希，但**大小相同、哈希不同**时只作为中性提示
-  （可能是较早的安装器构建，例如 winmm 的 PE 时间戳每次构建都不同；重跑安装器可对齐，不影响功能）
+- **QQ 应用打补丁状态**：按新方案的落点逐条查——QQ 根目录的 `winmm.dll` / `dbghelp.dll` /
+  `hook.ini`（是否 `mode=active` 且含 `skipfullreads`）、`QQ.exe` 的腾讯数字签名（有没有被降级版换掉）、
+  每个 `versions/*/resources/app` 的 `liuli_loader.js`、`package.patched.json`（`main` 是否
+  `./liuli_loader.js`），以及**原版 `package.json` 是否仍是原版**（`main` 还是
+  `./application.asar/app_launcher/index.js`；被旧安装器改成 `./app_launcher/LiteLoader.js`
+  会被单独标出来）、有没有旧方案遗留的 `app_launcher` 目录；还包含 `versions/config.json`
+  和运行中 QQ 是否就是安装目录这份。补丁文件「内置补丁」判断保留精确哈希，但**大小相同、哈希不同**时
+  只作为中性提示（可能是较早的安装器构建，例如 winmm 的 PE 时间戳每次构建都不同；重跑安装器可对齐，不影响功能）
 - **LiteLoader 本体**：版本、`store.js` 是否还有 `dirent.path`、是否含 `LiteLoader.path.plugins`、
   `runtime.js` 是否有 `unregisterPlugin`、关键文件大小/mtime
 - **显示器 / 显卡 / 会话**：显示器数量/分辨率/工作区/主屏、DPI、远程会话、WMI 显卡与驱动、内存
@@ -136,7 +149,8 @@ plugin-diag/<name>.zip 插件设置页导出的最新诊断包（可选；内容
 
 症状 → 证据链 → 采集方的完整对照见 [`DIAG-COVERAGE.md`](DIAG-COVERAGE.md)：
 
-- S1 每次启动弹报错：QQ 原生对话框、双主进程、补丁被覆盖、`package.json`/启动器、本体被换、
+- S1 每次启动弹报错：QQ 原生对话框、双主进程、QQ 根目录的 `winmm.dll` / `dbghelp.dll` / `hook.ini`
+  被覆盖或被杀软删掉、`package.patched.json` / `liuli_loader.js` 缺失、原版 `package.json` 被改坏、本体被换、
   Defender、日志错误聚合
 - S2 换壁纸背景不显示：显示器/显卡/远程会话、QQ Local Storage 元数据、插件导出包（壁纸细节）。
   注意 `assets/wallpaper.css` 缺失**属正常**：安装器版故意不发布默认壁纸（插件 `.gitignore` 排除了
@@ -162,8 +176,13 @@ pwsh -File build.ps1 -TestCopy       # 另外产出 dist\QQNT-Diag-Test.exe（as
 pwsh -File build.ps1 -RebuildWinmm   # 强制重新编译 winmm 代理（默认只在源码更新 / payload 缺失时才编）
 ```
 
-- 补丁文件路径在 `build.ps1` 顶部的参数里。`payload\` 不再整体删除：源路径不存在时，
-  复用 `payload\` 里已有的 `QQ.exe` / `dbghelp.dll` / `winmm.dll` 并给出提示；两边都没有才报错。
+- payload 文件路径在 `build.ps1` 顶部的参数里：`dbghelp.dll` 来自
+  `probe\b2\dbghelp.dll`（**生效版** hook；同目录的 `dbghelp.probe.dll` 只记日志、不换源，
+  build.ps1 会比对哈希，误打成探针版会直接报错），`liuli_loader.js` 来自 `probe\b2\liuli_loader.js`。
+  **不再打包降级版 QQ.exe**（新方案不替换 QQ.exe）；`payload\` 不再整体删除，源路径不存在时
+  复用 `payload\` 里已有的 `dbghelp.dll` / `winmm.dll` / `liuli_loader.js` 并给出提示，两边都没有才报错。
+- `hook.ini` 不进 payload：内容是 `Installer.cs` 里内联写的（`mode = active` / `match = skipfullreads:1` / `log =` 指向 `%APPDATA%\LiteLoaderQQNT\liuli-hook.log` / `sp =` 由「防检测增强」选项决定，默认 `off`），
+  安装时落到 QQ 根目录（`dbghelp.dll` 优先读自身同目录的 `hook.ini`；`C:\liuli-b2` 只是调试回退，安装器不再往那儿写）。
 - **winmm 默认不重编**：`winmm-proxy\winmm.c` / `build.cmd` 不比 `payload\winmm.dll` 新、且 payload 里有时，
   直接复用。MSVC 每次编译的 PE 头 `TimeDateStamp` 都不同，重编会让用户已装好的 winmm 哈希永远对不上，
   被诊断包误报成「不是安装器内置补丁」。确实需要重编时用 `-RebuildWinmm`。

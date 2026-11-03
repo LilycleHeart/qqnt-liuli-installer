@@ -1,9 +1,12 @@
-# 打包：把补丁文件、LiteLoader、插件塞进一个 exe。
+# 打包：把 hook 文件、LiteLoader、插件塞进一个 exe。
 # 输出：dist\QQNT-LiteLoader-Installer.exe
 # 可选：-TestCopy 额外产出 dist\QQNT-Diag-Test.exe（asInvoker 清单，便于在无管理员权限的会话里验证 /diag）
 #
 # 设计要点：
-#   * payload 不再整体删除：QQ.exe / dbghelp.dll / winmm.dll 的源路径不存在时，复用 payload 里已有的文件并给出明确提示；
+#   * 不再打包降级版 QQ.exe：新方案不替换 QQ.exe，也不改 application.asar / wrapper.node /
+#     major.node / package.json 这 4 个被签名的文件（改了会破坏签名清单，频道/腾讯文档弹「文件已损坏」）。
+#     改为 root\winmm.dll（代理）+ root\dbghelp.dll（运行时 hook）+ root\hook.ini（mode=active）。
+#   * payload 不再整体删除：dbghelp.dll / winmm.dll 的源路径不存在时，复用 payload 里已有的文件并给出明确提示；
 #     只有「源不存在、payload 也没有」才报错。
 #   * 插件 staging 用「工作区已跟踪 + 未忽略的新文件」（git ls-files --cached --others --exclude-standard），
 #     不再依赖 git archive HEAD：新写但还没 commit 的文件也会打进包；.gitignore 里的 wallpaper.* 仍然排除。
@@ -11,8 +14,8 @@
 #     MSVC 每次编译的 PE 头 TimeDateStamp 都不一样，重编会让用户已经装好的 winmm 哈希对不上，
 #     被诊断包误报成「不是安装器内置补丁」。需要强制重编时用 -RebuildWinmm。
 param(
-    [string]$QQExe = 'F:\download\Telegram Desktop\QQ.exe',
-    [string]$Dbghelp = 'F:\download\Telegram Desktop\dbghelp_x64.dll',
+    [string]$HookDbghelp = 'D:\Agent project\qq-liteloader\probe\b2\dbghelp.dll',
+    [string]$LiuliLoaderJs = 'D:\Agent project\qq-liteloader\probe\b2\liuli_loader.js',
     [string]$PluginRoot = 'D:\Agent project\qq-liteloader\liuli-plugin-work',
     [string]$PluginDirName = 'qqnt-liuli-theme',
     [string]$PluginSlug = 'liuli-dsh-theme',
@@ -41,11 +44,27 @@ function Get-PayloadFile {
     throw ("缺少 {0}：源路径 '{1}' 不存在，payload\{2} 也没有。请把源文件放好，或先准备 payload\{2}。" -f $What, $SourcePath, $PayloadName)
 }
 
-# --- 补丁文件 ---
-Get-PayloadFile -SourcePath $QQExe -PayloadName 'QQ.exe' -What 'QQ 补丁 QQ.exe'
-Get-PayloadFile -SourcePath $Dbghelp -PayloadName 'dbghelp.dll' -What 'dbghelp 补丁 dbghelp.dll'
+# --- payload 文件 ---
+# 不再打包补丁 QQ.exe：新方案保留原版 QQ.exe（腾讯签名），一个被签名的文件都不改。
+# dbghelp.dll 用 probe\b2 的「生效版」hook（不是旧的文件校验补丁）：运行时拦 CreateFileW，
+# 「读 main」那次换成 app\package.patched.json，签名校验那次放行原版。
+Get-PayloadFile -SourcePath $HookDbghelp -PayloadName 'dbghelp.dll' -What 'package.json hook dbghelp.dll（probe\b2 生效版）'
+Get-PayloadFile -SourcePath $LiuliLoaderJs -PayloadName 'liuli_loader.js' -What '引导器 liuli_loader.js'
 
-# --- winmm 代理（让 QQEX.exe 内置浏览器也加载 dbghelp 补丁）---
+# 防呆：probe\b2 里同时有「探针版」dbghelp.probe.dll（只记日志、不换源）。
+# 打错了装上去会看起来一切正常，但 LiteLoader 永远不加载，很难发现，所以这里直接拦下来。
+$probeDll = Join-Path (Split-Path -Parent $HookDbghelp) 'dbghelp.probe.dll'
+if ((Test-Path -LiteralPath $probeDll -PathType Leaf) -and (Test-Path -LiteralPath $HookDbghelp -PathType Leaf)) {
+    $hashFull = (Get-FileHash -LiteralPath $HookDbghelp -Algorithm SHA256).Hash
+    $hashProbe = (Get-FileHash -LiteralPath $probeDll -Algorithm SHA256).Hash
+    if ($hashFull -eq $hashProbe) {
+        $msg = '打包源 dbghelp.dll 和探针版 dbghelp.probe.dll 哈希相同：探针版只记日志、不换源，装上去 LiteLoader 不会加载。'
+        $msg += ' 请确认 ' + $HookDbghelp + ' 是生效版（build.cmd 不带 probe 参数编出来的那个）。'
+        throw $msg
+    }
+}
+
+# --- winmm 代理（把同目录的 dbghelp.dll hook 带进 QQEX.exe 等子进程）---
 # 默认不重编：MSVC 的 PE 头 TimeDateStamp 每次都变，重编会让「已装 winmm 哈希 == 安装器内置」永远对不上。
 $winmmDst = Join-Path $payload 'winmm.dll'
 $winmmBuilt = $false
@@ -159,9 +178,9 @@ $refs = @(
     '/r:System.Management.dll'
 )
 $resources = @(
-    "/resource:$payload\QQ.exe,QQ.exe",
     "/resource:$payload\dbghelp.dll,dbghelp.dll",
     "/resource:$payload\winmm.dll,winmm.dll",
+    "/resource:$payload\liuli_loader.js,liuli_loader.js",
     "/resource:$payload\LiteLoaderQQNT.zip,LiteLoaderQQNT.zip",
     "/resource:$payload\plugins.zip,plugins.zip"
 )

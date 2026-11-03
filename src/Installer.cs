@@ -1,5 +1,6 @@
 // QQNT LiteLoader 一键安装器
-// 内置：官方补丁 QQ.exe、dbghelp.dll、LiteLoaderQQNT 本体、琉璃与 QQ 增强插件。
+// 内置：winmm.dll 代理 + dbghelp.dll 运行时 hook（一个签名文件都不改、不换 QQ.exe）、
+//       LiteLoaderQQNT 本体、琉璃与 QQ 增强插件。
 // 编译：见 build.ps1（用 Windows 自带的 .NET Framework csc，无需另装运行库）。
 using System;
 using System.Collections.Generic;
@@ -16,8 +17,8 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyVersion("1.0.9.0")]
-[assembly: AssemblyFileVersion("1.0.9.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace LiteLoaderInstaller
 {
@@ -26,12 +27,20 @@ namespace LiteLoaderInstaller
         [STAThread]
         static void Main(string[] args)
         {
-            // 无界面模式：/install [/noplugins] 或 /restore，日志写到 %APPDATA%\LiteLoaderQQNT\installer.log
+            // 无界面模式：/install [/noplugins] [/sp:off|observe|apply] 或 /restore，日志写到 %APPDATA%\LiteLoaderQQNT\installer.log
             if (args.Length > 0)
             {
                 string mode = args[0].ToLowerInvariant();
                 bool plugins = Array.IndexOf(args, "/noplugins") < 0;
-                return_code = MainForm.Headless(mode, plugins);
+                string spMode = "off";
+                foreach (var a in args)
+                {
+                    var s = a.ToLowerInvariant();
+                    if (!s.StartsWith("/sp:")) continue;
+                    var v = s.Substring(4);
+                    if (v == "observe" || v == "apply" || v == "off") spMode = v;
+                }
+                return_code = MainForm.Headless(mode, plugins, spMode);
                 Environment.Exit(return_code);
             }
             Application.EnableVisualStyles();
@@ -57,12 +66,13 @@ namespace LiteLoaderInstaller
 
         TextBox qqBox;
         CheckBox pluginBox;
+        ComboBox spBox;
         RoundButton installBtn;
         LinkLabel restoreBtn, browseBtn, detailBtn, diagBtn;
         Label statusLbl;
         ProgressBar bar;
         TextBox logBox;
-        const int CollapsedH = 360, ExpandedH = 540;
+        const int CollapsedH = 412, ExpandedH = 592;
 
         // LiteLoader 本体/数据目录。LiteLoader 自己认 LITELOADERQQNT_PROFILE（见 loader/src/main/api.js），
         // 这里保持一致：用户设了自定义 profile 时，安装器和诊断包也看同一个地方。
@@ -111,7 +121,7 @@ namespace LiteLoaderInstaller
             diagBtn.LinkClicked += delegate { ExportDiag(); };
 
             // 卡片：QQ 位置 + 插件开关
-            var card = new CardPanel { Location = new Point(28, 104), Size = new Size(424, 116), BackColor = CardBg, Border = Line };
+            var card = new CardPanel { Location = new Point(28, 104), Size = new Size(424, 172), BackColor = CardBg, Border = Line };
             var pathLbl = new Label { Text = "QQ 位置", ForeColor = TextSub, Location = new Point(18, 16), AutoSize = true };
             browseBtn = MakeLink("更改", 0);
             browseBtn.Location = new Point(card.Width - 18 - browseBtn.PreferredWidth, 16);
@@ -132,26 +142,46 @@ namespace LiteLoaderInstaller
                 Text = "同时安装琉璃主题", Checked = true, ForeColor = TextMain, FlatStyle = FlatStyle.System,
                 Location = new Point(18, 82), AutoSize = true
             };
-            card.Controls.AddRange(new Control[] { pathLbl, browseBtn, qqBox, sep, pluginBox });
+            var sep2 = new Panel { BackColor = Line, Location = new Point(18, 112), Size = new Size(card.Width - 36, 1) };
+            var spLabel = new Label { Text = "防检测增强（实验性，一般不需要）", ForeColor = TextSub, Location = new Point(18, 122), AutoSize = true };
+            spBox = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList, ForeColor = TextMain, FlatStyle = FlatStyle.System,
+                Location = new Point(18, 144), Width = 240
+            };
+            spBox.Items.AddRange(new object[] { "关闭（默认）", "观测", "强力（实验性）" });
+            spBox.SelectedIndex = 0;
+            spBox.SelectedIndexChanged += delegate
+            {
+                if (spBox.SelectedIndex == 2)
+                {
+                    if (MessageBox.Show(this, "强力模式会在内存里拦截并中和 QQ 的检测行为，属实验性，极少数情况下可能导致 QQ 异常或无法启动。\n\n一般无需开启（当前 QQ 版本实测不需要）。确定使用强力模式？",
+                        Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
+                    {
+                        spBox.SelectedIndex = 0;
+                    }
+                }
+            };
+            card.Controls.AddRange(new Control[] { pathLbl, browseBtn, qqBox, sep, pluginBox, sep2, spLabel, spBox });
 
             installBtn = new RoundButton
             {
-                Text = "一键安装", Location = new Point(28, 240), Size = new Size(424, 46),
+                Text = "一键安装", Location = new Point(28, 292), Size = new Size(424, 46),
                 Font = new Font(Font.FontFamily, 11f, FontStyle.Bold), Normal = Brand, Hover = BrandHover
             };
             installBtn.Click += delegate { Run(true); };
 
-            bar = new ProgressBar { Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 25, Location = new Point(28, 294), Size = new Size(424, 3), Visible = false };
+            bar = new ProgressBar { Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 25, Location = new Point(28, 346), Size = new Size(424, 3), Visible = false };
 
             statusLbl = new Label
             {
                 Text = "会先关闭 QQ，并备份原文件", ForeColor = TextSub,
-                Location = new Point(28, 312), Size = new Size(280, 22), AutoEllipsis = true
+                Location = new Point(28, 364), Size = new Size(280, 22), AutoEllipsis = true
             };
             restoreBtn = MakeLink("还原", 0);
             detailBtn = MakeLink("详情", 0);
-            detailBtn.Location = new Point(452 - detailBtn.PreferredWidth, 312);
-            restoreBtn.Location = new Point(detailBtn.Left - 16 - restoreBtn.PreferredWidth, 312);
+            detailBtn.Location = new Point(452 - detailBtn.PreferredWidth, 364);
+            restoreBtn.Location = new Point(detailBtn.Left - 16 - restoreBtn.PreferredWidth, 364);
             restoreBtn.LinkClicked += delegate
             {
                 if (MessageBox.Show(this, "把 QQ 恢复成安装前的样子？\n琉璃的设置和数据会留着。", Text,
@@ -163,7 +193,7 @@ namespace LiteLoaderInstaller
             {
                 Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
                 BackColor = CardBg, ForeColor = TextSub, Font = new Font("Consolas", 9f),
-                Location = new Point(28, 348), Size = new Size(424, 168), Visible = false
+                Location = new Point(28, 400), Size = new Size(424, 168), Visible = false
             };
 
             Controls.AddRange(new Control[] { title, sub, diagBtn, card, installBtn, bar, statusLbl, restoreBtn, detailBtn, logBox });
@@ -301,7 +331,7 @@ namespace LiteLoaderInstaller
         StreamWriter fileLog;   // GUI 模式下 best-effort 落盘的 installer.log
         MainForm(StreamWriter w) { headlessLog = w; }
 
-        public static int Headless(string mode, bool plugins)
+        public static int Headless(string mode, bool plugins, string spMode)
         {
             Directory.CreateDirectory(LLRoot);
             string logPath = Path.Combine(LLRoot, "installer.log");
@@ -327,7 +357,7 @@ namespace LiteLoaderInstaller
                     string root = FindQQ();
                     if (root == null) throw new Exception("找不到 QQ");
                     HeadlessLine(w, "QQ: " + root);
-                    if (mode == "/install") f.Install(root, plugins);
+                    if (mode == "/install") f.Install(root, plugins, spMode);
                     else if (mode == "/restore") f.Restore(root);
                     else throw new Exception("未知参数 " + mode);
                     HeadlessLine(w, "OK");
@@ -346,8 +376,9 @@ namespace LiteLoaderInstaller
         {
             string root = qqBox.Text.Trim().Trim('"');
             bool plugins = pluginBox.Checked;
+            string spMode = spBox.SelectedIndex == 1 ? "observe" : (spBox.SelectedIndex == 2 ? "apply" : "off");
             if (!PathOk()) { CheckPath(); return; }
-            installBtn.Enabled = restoreBtn.Enabled = browseBtn.Enabled = pluginBox.Enabled = false;
+            installBtn.Enabled = restoreBtn.Enabled = browseBtn.Enabled = pluginBox.Enabled = spBox.Enabled = false;
             qqBox.ReadOnly = true;
             installBtn.Text = install ? "正在安装…" : "正在还原…";
             bar.Visible = true;
@@ -356,7 +387,7 @@ namespace LiteLoaderInstaller
                 string done = null, fail = null;
                 try
                 {
-                    if (install) Install(root, plugins); else Restore(root);
+                    if (install) Install(root, plugins, spMode); else Restore(root);
                     done = install ? "安装完成，QQ 已打开" : "还原完成，QQ 已打开";
                     Log(done);
                 }
@@ -365,7 +396,7 @@ namespace LiteLoaderInstaller
                 {
                     bar.Visible = false;
                     qqBox.ReadOnly = false;
-                    installBtn.Enabled = restoreBtn.Enabled = browseBtn.Enabled = pluginBox.Enabled = true;
+                    installBtn.Enabled = restoreBtn.Enabled = browseBtn.Enabled = pluginBox.Enabled = spBox.Enabled = true;
                     installBtn.Text = done != null && install ? "重新安装" : "一键安装";
                     SetStatus(done ?? fail, done != null ? Ok : Err);
                     if (fail != null) ToggleDetail(true);
@@ -374,43 +405,40 @@ namespace LiteLoaderInstaller
         }
 
         // ---------- 安装 ----------
-        void Install(string root, bool plugins)
+        // 方案（1.1.0 起）：一个被腾讯签名的文件都不改，也不换 QQ.exe
+        //   resources\app\{application.asar, wrapper.node, major.node, package.json} 全部保持原样。
+        //   做法是在 QQ 根目录放两个我们自己的 DLL：
+        //     winmm.dll  —— 代理，负责把同目录的 dbghelp.dll 加载进来（QQEX.exe 自己不加载 dbghelp）
+        //     dbghelp.dll—— 运行时 hook：拦 CreateFileW 对 resources\app\package.json 的读取，
+        //                   签名校验那一次（第 1 次全文读）放行原版，「读 main」那次换成
+        //                   app\package.patched.json（main 指向 ./liuli_loader.js）
+        //   行为由 root\hook.ini 决定：mode = active / match = skipfullreads:1
+        //   这样签名清单照常通过，主窗口 + 频道 + 腾讯文档（exApp）都不会再弹「文件已损坏」。
+        void Install(string root, bool plugins, string spMode)
         {
             StopQQ();
             string[] apps = AppDirs(root);
             if (apps.Length == 0) throw new Exception("找不到 versions\\*\\resources\\app\\package.json");
 
-            // 备份（只在第一次安装时备份原版，避免把已打补丁的文件当成原版）
             string bk = Path.Combine(BackupRoot, "original");
-            if (!Directory.Exists(bk))
-            {
-                Directory.CreateDirectory(bk);
-                foreach (var n in new[] { "QQ.exe", "dbghelp.dll", "winmm.dll" })
-                {
-                    string p = Path.Combine(root, n);
-                    // 已经是我们的补丁文件就不算原版（比如卸载 QQ 后残留的 dbghelp.dll）
-                    if (File.Exists(p) && !SameAsRes(n, p)) File.Copy(p, Path.Combine(bk, n), true);
-                }
-                var list = new StringBuilder();
-                for (int i = 0; i < apps.Length; i++)
-                {
-                    File.Copy(Path.Combine(apps[i], "package.json"), Path.Combine(bk, "package." + i + ".json"), true);
-                    list.AppendLine(apps[i]);
-                }
-                File.WriteAllText(Path.Combine(bk, "apps.txt"), list.ToString(), Utf8);
-                Log("已备份原文件到 " + bk);
-            }
-            else Log("已有原版备份，跳过备份。");
+            if (!Directory.Exists(bk)) { Directory.CreateDirectory(bk); Log("已创建原版备份目录 " + bk); }
 
-            // 补丁文件
-            WriteRes("QQ.exe", Path.Combine(root, "QQ.exe"));
-            WriteRes("dbghelp.dll", Path.Combine(root, "dbghelp.dll"));
-            // QQEX.exe（内置浏览器）不加载 dbghelp，靠这个 winmm 代理把补丁带进去，
-            // 否则打开网页时会弹"文件已损坏"
+            // 0) 从旧方案迁移：把旧安装器动过的签名文件改回原版。必须排在放新文件之前，
+            //    否则「原版 package.json」可能带着旧的 app_launcher 痕迹被当成原版。
+            MigrateFromOldScheme(root, apps, bk);
+
+            // 1) 备份原版 package.json（每个 app 一份 package.N.json，还原核验/回滚都靠它）
+            EnsureAppBackups(apps, bk);
+
+            // 2) QQ 根目录：代理 + hook + 配置
+            //    dbghelp.dll / winmm.dll 原版本来就不存在，所以不做备份，还原时直接删。
+            //    （如果在这里「存在才备份」，旧方案留下的文件校验补丁会被当成原版，还原时又被拷回来。）
             WriteRes("winmm.dll", Path.Combine(root, "winmm.dll"));
-            Log("已放入 QQ.exe、dbghelp.dll 和 winmm.dll");
+            WriteRes("dbghelp.dll", Path.Combine(root, "dbghelp.dll"));
+            Log("已放入 winmm.dll（代理）和 dbghelp.dll（hook）；QQ.exe 与 4 个签名文件都没动");
+            WriteHookIni(root, spMode);
 
-            // LiteLoader 本体（保留已有的 plugins 和 data）
+            // 3) LiteLoader 本体（保留已有的 plugins 和 data）
             Directory.CreateDirectory(LLRoot);
             ExtractRes("LiteLoaderQQNT.zip", LLRoot);
             Log("LiteLoader 已装到 " + LLRoot);
@@ -421,19 +449,20 @@ namespace LiteLoaderInstaller
                 Log("琉璃插件已装好");
             }
 
-            // 启动器 + package.json
-            string launcher = "require(String.raw`" + LLRoot + "`);\n";
+            // 4) 每个 app：引导器 + 改过 main 的副本。原版 package.json 一个字节都不改。
             foreach (var app in apps)
             {
-                string dir = Path.Combine(app, "app_launcher");
-                Directory.CreateDirectory(dir);
-                File.WriteAllText(Path.Combine(dir, "LiteLoader.js"), launcher, Utf8);
                 string pkg = Path.Combine(app, "package.json");
-                string json = File.ReadAllText(pkg);
-                string updated = Regex.Replace(json, "\"main\"\\s*:\\s*\"[^\"]*\"", "\"main\": \"./app_launcher/LiteLoader.js\"");
-                File.WriteAllText(pkg, updated, Utf8);
-                Log("已改 " + pkg);
+                string mainNow = ReadPackageMain(pkg);
+                if (mainNow != null && !IsOriginalMain(mainNow))
+                    Log("提示：" + pkg + " 的 main 是 " + mainNow + "（不是已知原版值 " + MainOriginalText
+                        + "），签名校验可能过不了；建议用 QQ 官方安装包修复一次再装");
+                string loader = Path.Combine(app, "liuli_loader.js");
+                WriteRes("liuli_loader.js", loader);
+                string patched = WritePatchedPackageJson(app);
+                Log("已写入 " + loader + " 和 " + patched + "（原版 package.json 未改动）");
             }
+
             // 聊天记录默认放在「文档」下；「文档」被 OneDrive 接管时，云文件 + 同步锁
             // 很容易让 QQ 报「文件系统访问异常」，提前提醒一句
             try
@@ -447,34 +476,342 @@ namespace LiteLoaderInstaller
         }
 
         // ---------- 还原 ----------
+        // 新方案的还原 = 删掉我们加的文件，签名文件一律不碰。
+        // 兼容旧方案：备份里有原版 QQ.exe 就拷回去（旧方案降级过），app_launcher 目录删掉，
+        // package.json 被改成 ./app_launcher/LiteLoader.js 的用备份恢复原版。
         void Restore(string root)
         {
             string bk = Path.Combine(BackupRoot, "original");
-            if (!Directory.Exists(bk)) throw new Exception("没有找到备份，无法还原。");
             StopQQ();
-            foreach (var n in new[] { "QQ.exe", "dbghelp.dll", "winmm.dll" })
+
+            // 1) 旧方案降级过的 QQ.exe：备份里有原版才可能恢复（新方案本来就没动 QQ.exe）
+            string bkExe = Path.Combine(bk, "QQ.exe");
+            string rootExe = Path.Combine(root, "QQ.exe");
+            if (File.Exists(bkExe))
             {
-                string src = Path.Combine(bk, n), dst = Path.Combine(root, n);
-                if (File.Exists(src)) File.Copy(src, dst, true);
-                else if (n != "QQ.exe" && File.Exists(dst)) File.Delete(dst);
+                try { File.Copy(bkExe, rootExe, true); Log("旧方案降级过 QQ.exe：已把备份里的原版拷回 " + rootExe); }
+                catch (Exception ex) { Log("恢复原版 QQ.exe 失败：" + ex.Message); }
             }
-            string[] apps = File.ReadAllLines(Path.Combine(bk, "apps.txt"));
-            for (int i = 0; i < apps.Length; i++)
+
+            // 2) 删掉我们放在 QQ 根目录的代理 / hook / 配置
+            foreach (var n in new[] { "dbghelp.dll", "winmm.dll" })
             {
-                string src = Path.Combine(bk, "package." + i + ".json");
-                if (apps[i].Trim().Length > 0 && File.Exists(src) && Directory.Exists(apps[i]))
-                    File.Copy(src, Path.Combine(apps[i], "package.json"), true);
-                // 安装时多建的 app_launcher 也删掉，app 目录回到原样（多出的文件夹可能让 QQ 自检报「文件已损坏」）
-                string launcherDir = Path.Combine(apps[i].Trim(), "app_launcher");
-                if (apps[i].Trim().Length > 0 && Directory.Exists(launcherDir))
+                string dst = Path.Combine(root, n);
+                if (!File.Exists(dst)) { Log(dst + " 不存在，跳过"); continue; }
+                try { File.Delete(dst); Log("已删除 " + dst); }
+                catch (Exception ex) { Log("删除 " + dst + " 失败：" + ex.Message); }
+            }
+            RemoveHookIni(root);
+
+            // 3) 每个 app：删引导器和副本；旧方案的 app_launcher 与被改过的 package.json 一并还原
+            foreach (var app in RestoreAppList(root, bk))
+            {
+                if (!Directory.Exists(app)) continue;
+                foreach (var n in new[] { "liuli_loader.js", "package.patched.json" })
                 {
-                    try { Directory.Delete(launcherDir, true); Log("已删除 " + launcherDir); }
+                    string p = Path.Combine(app, n);
+                    if (!File.Exists(p)) continue;
+                    try { File.Delete(p); Log("已删除 " + p); }
+                    catch (Exception ex) { Log("删除 " + p + " 失败：" + ex.Message); }
+                }
+                string launcherDir = Path.Combine(app, "app_launcher");
+                if (Directory.Exists(launcherDir))
+                {
+                    // 旧方案多建的目录，留着会让 QQ 自检报「文件已损坏」
+                    try { Directory.Delete(launcherDir, true); Log("已删除 " + launcherDir + "（旧方案遗留）"); }
                     catch (Exception e) { Log("删除 " + launcherDir + " 失败：" + e.Message); }
                 }
+                string pkg = Path.Combine(app, "package.json");
+                if (File.Exists(pkg) && IsOldPatchedMain(ReadPackageMain(pkg)))
+                    RestoreOriginalPackageJson(pkg, BackupPackagePath(bk, app), "旧方案");
             }
-            Directory.Delete(bk, true);
-            Log("已还原 QQ.exe、dbghelp.dll 和 package.json。插件和数据保留在 " + LLRoot);
+
+            if (Directory.Exists(bk))
+            {
+                try { Directory.Delete(bk, true); Log("已删除原版备份目录 " + bk + "（下次安装会重新备份）"); }
+                catch (Exception ex) { Log("删除备份目录失败：" + ex.Message); }
+            }
+            Log("已移除 winmm.dll、dbghelp.dll、hook.ini、liuli_loader.js 和 package.patched.json；"
+                + "被旧方案改过的 package.json / QQ.exe 已恢复原版（新方案本来就没动它们）。插件和数据保留在 " + LLRoot);
             StartQQ(root);
+        }
+
+        // ---------- 新方案要用到的固定值与小工具 ----------
+
+        // 原版 resources\app\package.json 里 main 的值。整个方案的前提：
+        // 磁盘上这个文件永远保持这个值，改 main 只发生在 package.patched.json 里。
+        const string MainOriginalText = "./application.asar/app_launcher/index.js";
+        const string MainOldPatchedText = "./app_launcher/LiteLoader.js";
+        const string MainNewPatchedText = "./liuli_loader.js";
+        const string MainOriginalNorm = "application.asar/app_launcher/index.js";
+        const string MainOldPatchedNorm = "app_launcher/liteloader.js";
+        const string MainNewPatchedNorm = "liuli_loader.js";
+        // "main" 字段（值是带转义的 JSON 字符串）。只换值，缩进/键顺序/换行等其它字节不动。
+        const string MainFieldPattern = "(\"main\"\\s*:\\s*)(\"(?:[^\"\\\\]|\\\\.)*\")";
+
+        // hook.ini 四行：active + 不依赖版本偏移的匹配条件 + 日志位置 + sp（防检测增强档位）。
+        // （第 1 次「全文读」是完整性校验，放行原版；之后「读 main」那次给 patched 版）
+        // sp = off（默认，完全不介入）| observe（只挂钩记录）| apply（实际中和/拦截）。
+        // dbghelp.dll 优先读自身同目录的 hook.ini，所以只写到 QQ 根目录即可。
+        // 日志写到 LLRoot（%APPDATA%，QQ 进程可写；Program Files 写不了），不在用户机器建调试目录。
+        static string HookIniText(string spMode)
+        {
+            return "mode = active\r\nmatch = skipfullreads:1\r\nlog = "
+                + Path.Combine(LLRoot, "liuli-hook.log") + "\r\nsp = " + spMode + "\r\n";
+        }
+
+        static string NormMain(string main)
+        {
+            if (main == null) return "";
+            string s = main.Replace('\\', '/').Trim().ToLowerInvariant();
+            while (s.StartsWith("./", StringComparison.Ordinal)) s = s.Substring(2);
+            return s;
+        }
+
+        static bool IsOriginalMain(string main) { return NormMain(main) == MainOriginalNorm; }
+        static bool IsOldPatchedMain(string main) { return NormMain(main) == MainOldPatchedNorm; }
+        static bool IsNewPatchedMain(string main) { return NormMain(main) == MainNewPatchedNorm; }
+
+        // 读 package.json 的 main；解析失败/没有 main 都返回 null
+        static string ReadPackageMain(string pkg)
+        {
+            try
+            {
+                var obj = MiniJson.AsObj(MiniJson.Parse(File.ReadAllText(pkg, Utf8)));
+                return obj == null ? null : MiniJson.Str(obj, "main");
+            }
+            catch { return null; }
+        }
+
+        // 生成 app\package.patched.json：纯文本替换 main 的值，其余字节原样，UTF-8 无 BOM。
+        // 返回写出的路径（供日志用）。
+        string WritePatchedPackageJson(string app)
+        {
+            string pkg = Path.Combine(app, "package.json");
+            if (!File.Exists(pkg)) throw new Exception("缺 " + pkg + "，无法生成 package.patched.json");
+            string json = File.ReadAllText(pkg, Utf8);
+            var ms = Regex.Matches(json, MainFieldPattern);
+            if (ms.Count != 1)
+                throw new Exception(pkg + " 里 \"main\" 字段出现 " + ms.Count + " 次（应为 1 次），不敢自动生成 package.patched.json");
+            var m = ms[0];
+            string current = m.Groups[2].Value;
+            string patched = json.Substring(0, m.Index) + m.Groups[1].Value + "\"" + MainNewPatchedText + "\""
+                + json.Substring(m.Index + m.Length);
+            string dst = Path.Combine(app, "package.patched.json");
+            File.WriteAllText(dst, patched, Utf8);
+            Log("      main: " + current + "  →  \"" + MainNewPatchedText + "\"（只写在 package.patched.json 里）");
+            return dst;
+        }
+
+        // 把被旧方案改过的 package.json 恢复成原版：优先用备份 package.N.json；
+        // 没有备份时只把 main 的值改回原始值（其它字节不动），并在日志里明确告警。
+        void RestoreOriginalPackageJson(string pkg, string backupPkg, string why)
+        {
+            if (!string.IsNullOrEmpty(backupPkg) && File.Exists(backupPkg))
+            {
+                File.Copy(backupPkg, pkg, true);
+                Log(why + "改过 " + pkg + "：已用备份 " + Path.GetFileName(backupPkg) + " 恢复原版");
+                return;
+            }
+            try
+            {
+                string text = File.ReadAllText(pkg, Utf8);
+                var ms = Regex.Matches(text, MainFieldPattern);
+                if (ms.Count != 1) { Log("恢复 " + pkg + " 失败：\"main\" 字段出现 " + ms.Count + " 次，请手工处理或重装 QQ"); return; }
+                var m = ms[0];
+                string restored = text.Substring(0, m.Index) + m.Groups[1].Value + "\"" + MainOriginalText + "\""
+                    + text.Substring(m.Index + m.Length);
+                File.WriteAllText(pkg, restored, Utf8);
+                Log("警告：没有 " + pkg + " 的原版备份，已把 main 改回 " + MainOriginalText + "（其它字节未动）。"
+                    + "若 QQ 仍报「文件已损坏」，用 QQ 官方安装包修复一次再装。");
+            }
+            catch (Exception ex) { Log("恢复 " + pkg + " 失败：" + ex.Message); }
+        }
+
+        // 备份里 apps.txt 第 N 行 <-> package.N.json（旧安装器就是这么存的）
+        static List<string> BackupAppList(string bk)
+        {
+            var list = new List<string>();
+            try
+            {
+                string f = Path.Combine(bk, "apps.txt");
+                if (!File.Exists(f)) return list;
+                foreach (var line in File.ReadAllLines(f, Utf8))
+                {
+                    string t = line.Trim();
+                    if (t.Length > 0) list.Add(t);
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        static string BackupPackagePath(string bk, string app)
+        {
+            var list = BackupAppList(bk);
+            for (int i = 0; i < list.Count; i++)
+            {
+                try
+                {
+                    if (string.Equals(Path.GetFullPath(list[i]).TrimEnd('\\'),
+                                      Path.GetFullPath(app).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                        return Path.Combine(bk, "package." + i + ".json");
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        // 每个 app 的原版 package.json 留一份备份；新出现的版本目录（QQ 自动更新）补上备份
+        void EnsureAppBackups(string[] apps, string bk)
+        {
+            var list = BackupAppList(bk);
+            bool added = false;
+            foreach (var app in apps)
+            {
+                bool found = false;
+                foreach (var b in list)
+                {
+                    try
+                    {
+                        if (string.Equals(Path.GetFullPath(b).TrimEnd('\\'),
+                                          Path.GetFullPath(app).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                        { found = true; break; }
+                    }
+                    catch { }
+                }
+                if (found) continue;
+                string pkg = Path.Combine(app, "package.json");
+                if (!File.Exists(pkg)) continue;
+                int idx = list.Count;
+                File.Copy(pkg, Path.Combine(bk, "package." + idx + ".json"), true);
+                list.Add(app);
+                added = true;
+                Log("已备份原版 " + pkg + " → package." + idx + ".json");
+            }
+            if (added || !File.Exists(Path.Combine(bk, "apps.txt")))
+            {
+                var sb = new StringBuilder();
+                foreach (var s in list) sb.AppendLine(s);
+                File.WriteAllText(Path.Combine(bk, "apps.txt"), sb.ToString(), Utf8);
+                if (!added) Log("已有原版备份，跳过备份。");
+                else Log("已更新 " + Path.Combine(bk, "apps.txt") + "（共 " + list.Count + " 个 app）");
+            }
+            else Log("已有原版备份，跳过备份。");
+        }
+
+        // 旧安装器（≤1.0.9）改过 package.json、降级过 QQ.exe、多建了 app_launcher。
+        // 新方案一个都不改，所以安装/还原前先把这些痕迹按备份改回原版。
+        void MigrateFromOldScheme(string root, string[] apps, string bk)
+        {
+            // 1) QQ.exe：备份里有原版 = 当前 root\QQ.exe 是降级版 → 拷回原版并清掉备份
+            string bkExe = Path.Combine(bk, "QQ.exe");
+            string rootExe = Path.Combine(root, "QQ.exe");
+            if (File.Exists(bkExe))
+            {
+                try
+                {
+                    File.Copy(bkExe, rootExe, true);
+                    File.Delete(bkExe);
+                }
+                catch (Exception ex)
+                {
+                    throw new Exception("把备份里的原版 QQ.exe 恢复回去失败（" + ex.Message
+                        + "）。请先完全退出 QQ、以管理员身份重试；否则新方案会在降级版 QQ.exe 上装，签名校验过不了。");
+                }
+                Log("旧方案降级过 QQ.exe：已把备份里的原版（腾讯签名）拷回 " + rootExe
+                    + "，并删除备份里的 QQ.exe（新方案不再替换 QQ.exe）");
+            }
+            else if (File.Exists(rootExe) && !SignedByTencent(rootExe))
+            {
+                Log("提示：" + rootExe + " 读不到腾讯签名，可能仍是旧方案的降级版。新方案不碰 QQ.exe；"
+                    + "若 QQ 报「文件已损坏」，用 QQ 官方安装包修复一次再装。");
+            }
+
+            // 2) package.json：main 被改成 ./app_launcher/LiteLoader.js 的，恢复原版
+            int fixedCount = 0;
+            foreach (var app in apps)
+            {
+                string pkg = Path.Combine(app, "package.json");
+                if (!File.Exists(pkg)) continue;
+                if (!IsOldPatchedMain(ReadPackageMain(pkg))) continue;
+                RestoreOriginalPackageJson(pkg, BackupPackagePath(bk, app), "旧方案");
+                fixedCount++;
+            }
+
+            // 3) app_launcher 目录（旧方案的启动器）：新方案用 app\liuli_loader.js，不需要它
+            foreach (var app in apps)
+            {
+                string dir = Path.Combine(app, "app_launcher");
+                if (!Directory.Exists(dir)) continue;
+                try { Directory.Delete(dir, true); Log("已删除旧方案遗留的 " + dir + "（新方案用 app\\liuli_loader.js）"); }
+                catch (Exception ex) { Log("删除 " + dir + " 失败：" + ex.Message + "（关掉 QQ 后重装一次）"); }
+            }
+            if (fixedCount > 0) Log("迁移完成：已把 " + fixedCount + " 个版本的 package.json 改回原版");
+        }
+
+        // 写 root\hook.ini（dbghelp.dll 优先读自身同目录的这份）
+        void WriteHookIni(string root, string spMode)
+        {
+            string p = Path.Combine(root, "hook.ini");
+            try { File.WriteAllText(p, HookIniText(spMode), Utf8); }
+            catch (Exception ex)
+            {
+                throw new Exception("写 " + p + " 失败（" + ex.Message + "）。QQ 目录需要管理员权限，请右键「以管理员身份运行」。");
+            }
+            Log("已写 " + p + "（active / skipfullreads:1 / log → " + Path.Combine(LLRoot, "liuli-hook.log") + " / sp = " + spMode + "）");
+        }
+
+        // 删 hook.ini：只删 QQ 根目录这份
+        void RemoveHookIni(string root)
+        {
+            string p = Path.Combine(root, "hook.ini");
+            if (File.Exists(p))
+            {
+                try { File.Delete(p); Log("已删除 " + p); }
+                catch (Exception ex) { Log("删除 " + p + " 失败：" + ex.Message); }
+            }
+        }
+
+        // 读 PE 的 Authenticode 签名主体（.NET Framework 自带，不需要 P/Invoke）。读不到返回空串。
+        static string SignatureText(string path)
+        {
+            try
+            {
+                var cert = System.Security.Cryptography.X509Certificates.X509Certificate.CreateFromSignedFile(path);
+                if (cert == null) return "";
+                string subject = cert.Subject ?? "";
+                return subject.Length == 0 ? "有签名" : subject;
+            }
+            catch { return ""; }
+        }
+
+        static bool SignedByTencent(string path)
+        {
+            return SignatureText(path).IndexOf("Tencent", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        static string[] AppDirsSafe(string root)
+        {
+            try { return AppDirs(root); } catch { return new string[0]; }
+        }
+
+        // 还原时处理哪些 app：当前 versions\* 里有的 + 备份记录里有的（QQ 更新后旧版本目录可能已不在）
+        static string[] RestoreAppList(string root, string bk)
+        {
+            var list = new List<string>();
+            Action<string> add = delegate (string a)
+            {
+                if (string.IsNullOrEmpty(a)) return;
+                string full;
+                try { full = Path.GetFullPath(a).TrimEnd('\\'); } catch { return; }
+                foreach (var s in list)
+                    if (string.Equals(s, full, StringComparison.OrdinalIgnoreCase)) return;
+                list.Add(full);
+            };
+            foreach (var a in AppDirsSafe(root)) add(a);
+            foreach (var a in BackupAppList(bk)) add(a);
+            return list.ToArray();
         }
 
         // ---------- 诊断包 ----------
@@ -2284,7 +2621,9 @@ namespace LiteLoaderInstaller
             try { vdirs = Directory.GetDirectories(versions); }
             catch (Exception ex) { sb.AppendLine("  采集失败: " + ex.Message); return; }
             sb.AppendLine("  versions 下共 " + vdirs.Length + " 个版本目录");
-            int noLauncher = 0, patched = 0;
+            sb.AppendLine("  新方案不改这 4 个签名文件（application.asar / wrapper.node / major.node / package.json），");
+            sb.AppendLine("  只在 app 目录加 liuli_loader.js + package.patched.json，由 QQ 根目录的 dbghelp.dll hook 换源。");
+            int okApps = 0, badApps = 0;
             foreach (var v in vdirs)
             {
                 string vname = Path.GetFileName(v);
@@ -2292,8 +2631,10 @@ namespace LiteLoaderInstaller
                 try { sb.AppendLine("      目录修改时间: " + Directory.GetLastWriteTime(v).ToString("yyyy-MM-dd HH:mm:ss")); } catch { }
                 string app = Path.Combine(v, "resources", "app");
                 if (!Directory.Exists(app)) { sb.AppendLine("      resources\\app 不存在，跳过"); continue; }
+
+                // (1) 原版 package.json 必须还是原版 —— 整个方案的前提
                 string pkg = Path.Combine(app, "package.json");
-                bool mainOk = false, launcherOk = false;
+                bool pkgOrig = false;
                 if (!File.Exists(pkg))
                 {
                     sb.AppendLine("      package.json 不存在   <<==");
@@ -2311,56 +2652,177 @@ namespace LiteLoaderInstaller
                         else main = MiniJson.Str(map, "main");
                     }
                     catch (Exception ex) { err = ex.Message; }
-                    sb.AppendLine("      package.json: " + new FileInfo(pkg).Length + " 字节  修改 " + File.GetLastWriteTime(pkg).ToString("yyyy-MM-dd HH:mm:ss")
+                    sb.AppendLine("      package.json（签名文件，必须保持原版）: " + new FileInfo(pkg).Length + " 字节  修改 " + File.GetLastWriteTime(pkg).ToString("yyyy-MM-dd HH:mm:ss")
                         + "  BOM=" + (bom ? "有   <<== JSON.parse 会失败" : "无")
                         + "  JSON=" + (err == null ? "正常" : "解析失败: " + err + "   <<=="));
                     if (err != null)
                         ctx.Add("bad", "版本 " + vname + " 的 package.json 解析失败: " + err + "（QQ 更新器可能改坏了；用安装器重装一次）");
                     if (main == null)
                     {
-                        sb.AppendLine("      main 字段: 缺失   <<== 没指向 LiteLoader");
-                        ctx.Add("bad", "版本 " + vname + " 的 package.json 没有 main 字段，LiteLoader 不会加载");
+                        sb.AppendLine("      main 字段: 缺失   <<== 原版一定有 main");
+                        ctx.Add("bad", "版本 " + vname + " 的 package.json 没有 main 字段");
+                    }
+                    else if (IsOriginalMain(main))
+                    {
+                        pkgOrig = true;
+                        sb.AppendLine("      main = " + main + "   （原版，正常）");
+                    }
+                    else if (IsOldPatchedMain(main))
+                    {
+                        sb.AppendLine("      main = " + main + "   <<== 被旧安装器改过（旧方案）");
+                        ctx.Add("bad", "版本 " + vname + " 的 package.json 被旧安装器改成了 " + main
+                            + "：这会破坏 QQ 的签名清单，频道/腾讯文档会弹「文件已损坏」。用本安装器重装一次会自动改回原版");
+                    }
+                    else if (IsNewPatchedMain(main))
+                    {
+                        sb.AppendLine("      main = " + main + "   <<== 磁盘上的原版被直接改坏了");
+                        ctx.Add("bad", "版本 " + vname + " 的 package.json 的 main 被直接改成了 ./liuli_loader.js；"
+                            + "原版文件不能有这个值（签名校验会失败）。用安装器重装，或从 installer-backup 还原");
                     }
                     else
                     {
-                        string norm = main.Replace('\\', '/').Trim();
-                        mainOk = string.Equals(norm, "./app_launcher/LiteLoader.js", StringComparison.OrdinalIgnoreCase)
-                            || string.Equals(norm, "app_launcher/LiteLoader.js", StringComparison.OrdinalIgnoreCase);
-                        sb.AppendLine("      main = " + main + (mainOk ? "   （已指向 LiteLoader）" : "   <<== 没指向 app_launcher/LiteLoader.js，LiteLoader 不会加载"));
-                        if (!mainOk)
-                            ctx.Add("bad", "版本 " + vname + " 的 package.json main 指向 " + main + "，不是 app_launcher/LiteLoader.js（多半被 QQ 更新覆盖了，用安装器重装）");
+                        sb.AppendLine("      main = " + main + "   <<== 不是已知原版值（期望 " + MainOriginalText + "）");
+                        ctx.Add("warn", "版本 " + vname + " 的 package.json main 是 " + main + "，不是已知原版值 "
+                            + MainOriginalText + "；若 QQ 起不来，用 QQ 官方安装包修复一次");
                     }
                     if (bom)
                         ctx.Add("bad", "版本 " + vname + " 的 package.json 带 BOM（QQ 的 JSON.parse 会失败）");
                 }
 
-                string launcher = Path.Combine(app, "app_launcher", "LiteLoader.js");
-                if (File.Exists(launcher))
+                // (2) 引导器（与原版 package.json 同级）
+                string loader = Path.Combine(app, "liuli_loader.js");
+                bool loaderOk = false;
+                if (File.Exists(loader))
                 {
-                    launcherOk = true;
-                    string content = "";
-                    try
-                    {
-                        using (var fs = new FileStream(launcher, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                        using (var sr = new StreamReader(fs, Utf8)) content = sr.ReadToEnd();
-                    }
-                    catch (Exception ex) { content = "(读失败: " + ex.Message + ")"; }
-                    sb.AppendLine("      app_launcher\\LiteLoader.js: 存在 " + new FileInfo(launcher).Length + " 字节  修改 "
-                        + File.GetLastWriteTime(launcher).ToString("yyyy-MM-dd HH:mm:ss"));
+                    loaderOk = true;
+                    string content = ReadTextSafe(loader, 64 * 1024);
+                    sb.AppendLine("      liuli_loader.js: 存在 " + new FileInfo(loader).Length + " 字节  修改 "
+                        + File.GetLastWriteTime(loader).ToString("yyyy-MM-dd HH:mm:ss"));
                     sb.AppendLine("      内容: " + Truncate(SanitizeText(Regex.Replace(content, @"\s+", " ")), 300));
-                    if (content.IndexOf(LLRoot, StringComparison.OrdinalIgnoreCase) < 0)
-                        ctx.Add("warn", "版本 " + vname + " 的 app_launcher/LiteLoader.js 指向的目录和当前 LiteLoader 目录不一致（" + LLRoot + "），可能是装了多份或改过 profile");
+                    if (content.IndexOf("LiteLoaderQQNT", StringComparison.OrdinalIgnoreCase) < 0)
+                        ctx.Add("warn", "版本 " + vname + " 的 liuli_loader.js 内容不像安装器内置的那份（没提到 LiteLoaderQQNT），可能被改过");
                 }
                 else
                 {
-                    sb.AppendLine("      app_launcher\\LiteLoader.js: 不存在   <<== 启动器没写，LiteLoader 不会加载");
-                    ctx.Add("bad", "版本 " + vname + " 缺 app_launcher/LiteLoader.js（被打补丁的 QQ 会当成启动失败）");
+                    sb.AppendLine("      liuli_loader.js: 不存在   <<== 引导器没放，LiteLoader 不会加载");
+                    ctx.Add("bad", "版本 " + vname + " 缺 liuli_loader.js（重装安装器可修复）");
                 }
-                if (mainOk && launcherOk) patched++; else noLauncher++;
+
+                // (3) package.patched.json：hook 换源后 Node 读到的就是它
+                string patchedPkg = Path.Combine(app, "package.patched.json");
+                bool patchedOk = false;
+                if (File.Exists(patchedPkg))
+                {
+                    string pmain = null;
+                    string perr = null;
+                    try
+                    {
+                        var pmap = MiniJson.AsObj(MiniJson.Parse(File.ReadAllText(patchedPkg, Utf8)));
+                        if (pmap == null) perr = "顶层不是 JSON 对象";
+                        else pmain = MiniJson.Str(pmap, "main");
+                    }
+                    catch (Exception ex) { perr = ex.Message; }
+                    sb.AppendLine("      package.patched.json: 存在 " + new FileInfo(patchedPkg).Length + " 字节  BOM="
+                        + (HasBom(patchedPkg) ? "有   <<==" : "无")
+                        + "  JSON=" + (perr == null ? "正常" : "解析失败: " + perr + "   <<=="));
+                    if (perr != null)
+                        ctx.Add("bad", "版本 " + vname + " 的 package.patched.json 解析失败: " + perr + "（重装安装器可修复）");
+                    else if (!IsNewPatchedMain(pmain))
+                    {
+                        sb.AppendLine("      package.patched.json main = " + pmain + "   <<== 应该是 " + MainNewPatchedText);
+                        ctx.Add("bad", "版本 " + vname + " 的 package.patched.json 的 main 是 " + pmain
+                            + "，应该是 " + MainNewPatchedText + "（重装安装器可修复）");
+                    }
+                    else
+                    {
+                        patchedOk = true;
+                        sb.AppendLine("      package.patched.json main = " + pmain + "   （正确）");
+                    }
+                }
+                else
+                {
+                    sb.AppendLine("      package.patched.json: 不存在   <<== hook 换源时找不到就放行原版，LiteLoader 不会加载");
+                    ctx.Add("bad", "版本 " + vname + " 缺 package.patched.json（重装安装器可修复）");
+                }
+
+                // (4) 旧方案遗留：app_launcher 目录（多出来的文件夹可能让 QQ 自检报「文件已损坏」）
+                string oldLauncher = Path.Combine(app, "app_launcher");
+                if (Directory.Exists(oldLauncher))
+                {
+                    sb.AppendLine("      app_launcher: 存在   <<== 旧方案遗留（新方案不用它）");
+                    ctx.Add("warn", "版本 " + vname + " 下还有旧方案遗留的 app_launcher 目录；用本安装器重装一次会自动清掉");
+                }
+
+                if (pkgOrig && loaderOk && patchedOk) okApps++; else badApps++;
             }
-            sb.AppendLine("  汇总: 已打补丁 " + patched + " 个版本，未打补丁/异常 " + noLauncher + " 个版本");
-            if (vdirs.Length > 1 && patched < vdirs.Length)
-                ctx.Add("warn", "有 " + (vdirs.Length - patched) + " 个版本的 app 没打补丁/补丁不完整（QQ 自动更新会新建版本目录，需要重装一次安装器）");
+            sb.AppendLine("  汇总: 就绪 " + okApps + " 个版本，缺件/异常 " + badApps + " 个版本");
+            if (vdirs.Length > 1 && okApps < vdirs.Length)
+                ctx.Add("warn", "有 " + (vdirs.Length - okApps) + " 个版本没装好/不完整（QQ 自动更新会新建版本目录，重装一次安装器即可）");
+
+            // QQ 根目录：winmm 代理 + dbghelp hook + hook.ini + QQ.exe 是否原版
+            sb.AppendLine("  ---- QQ 根目录（新方案落点）----");
+            foreach (var n in new[] { "winmm.dll", "dbghelp.dll" })
+            {
+                string p = Path.Combine(root, n);
+                if (File.Exists(p))
+                {
+                    long len = 0;
+                    try { len = new FileInfo(p).Length; } catch { }
+                    sb.AppendLine("  " + n + ": 存在 " + len + " 字节  修改 " + File.GetLastWriteTime(p).ToString("yyyy-MM-dd HH:mm:ss")
+                        + "  内置=" + PatchCompareText(n, p, len));
+                    ctx.Add("ok", "QQ 根目录的 " + n + " 存在");
+                }
+                else
+                {
+                    sb.AppendLine("  " + n + ": 不存在   <<==");
+                    ctx.Add("bad", "QQ 根目录缺 " + n
+                        + (n == "winmm.dll" ? "（winmm 代理，负责把 dbghelp 带进 QQEX.exe）" : "（package.json hook 本体）")
+                        + "，重装安装器可修复");
+                }
+            }
+            string ini = Path.Combine(root, "hook.ini");
+            if (File.Exists(ini))
+            {
+                string iniText = ReadTextSafe(ini, 64 * 1024);
+                bool iniActive = iniText.IndexOf("active", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool iniSkip = iniText.IndexOf("skipfullreads", StringComparison.OrdinalIgnoreCase) >= 0;
+                sb.AppendLine("  hook.ini: 存在  mode含active=" + (iniActive ? "是" : "否   <<==")
+                    + "  match含skipfullreads=" + (iniSkip ? "是" : "否   <<=="));
+                sb.AppendLine("      内容: " + Truncate(SanitizeText(Regex.Replace(iniText, @"\s+", " ")), 300));
+                if (!iniActive || !iniSkip)
+                    ctx.Add("warn", "QQ 根目录的 hook.ini 不是安装器写的那份（缺 mode=active 或 match=skipfullreads:1），hook 可能不生效");
+                else
+                    ctx.Add("ok", "hook.ini 内容正确（mode = active / match = skipfullreads:1）");
+            }
+            else
+            {
+                sb.AppendLine("  hook.ini: 不存在   <<== hook 会退回 probe 模式（只记日志，不换源）");
+                ctx.Add("bad", "QQ 根目录缺 hook.ini：dbghelp.dll hook 会退回 probe 模式，LiteLoader 不会加载（重装安装器可修复）");
+            }
+            if (File.Exists(exe))
+            {
+                string sig = SignatureText(exe);
+                if (sig.IndexOf("Tencent", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    sb.AppendLine("  QQ.exe 签名: 腾讯（" + Truncate(sig, 160) + "）  原版，没被降级");
+                    ctx.Add("ok", "QQ.exe 带腾讯数字签名（原版，新方案不改它）");
+                }
+                else
+                {
+                    string bkExeDiag = Path.Combine(BackupRoot, "original", "QQ.exe");
+                    if (File.Exists(bkExeDiag))
+                    {
+                        sb.AppendLine("  QQ.exe 签名: 读不到   <<== 且备份里有原版 QQ.exe（旧方案降级过）");
+                        ctx.Add("bad", "QQ.exe 读不到腾讯签名，且 installer-backup\\original\\QQ.exe 还在（旧方案降级过）："
+                            + "用本安装器重装一次会把原版拷回来，或直接用 QQ 官方安装包修复");
+                    }
+                    else
+                    {
+                        sb.AppendLine("  QQ.exe 签名: 读不到（" + (sig.Length == 0 ? "无签名或读取失败" : sig) + "）   <<==");
+                        ctx.Add("warn", "读不到 QQ.exe 的腾讯签名（可能是精简系统或被换过）；若频道、腾讯文档弹「文件已损坏」，用 QQ 官方安装包修复一次");
+                    }
+                }
+            }
 
             // 运行中的 QQ 是否就是安装目录里这份
             string rootExe = Path.Combine(root, "QQ.exe");
@@ -2857,24 +3319,30 @@ namespace LiteLoaderInstaller
                             if (vi != null && vi.FileVersion != null) fv = vi.FileVersion;
                         }
                         catch { }
-                        string cmpText = PatchCompareText(n, p, fi.Length);
+                        // QQ.exe 不再是内置补丁（新方案保留原版腾讯签名），只列元数据和签名
+                        string cmpText = n == "QQ.exe" ? "不适用（新方案不改 QQ.exe）" : PatchCompareText(n, p, fi.Length);
                         sb.AppendLine("  " + n + ": " + fi.Length + " 字节  修改 " + fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
                             + (fv.Length == 0 ? "" : "  文件版本 " + fv));
                         sb.AppendLine("      SHA256 " + Sha256Of(p) + "   内置补丁=" + cmpText);
+                        if (n == "QQ.exe")
+                        {
+                            string sig = SignatureText(p);
+                            sb.AppendLine("      数字签名: " + (sig.Length == 0 ? "读不到   <<==" : sig));
+                        }
                     }
                     catch (Exception ex) { sb.AppendLine("  " + n + " 采集失败: " + ex.Message); }
                 }
             }
             sb.AppendLine("  原版备份: " + (Directory.Exists(Path.Combine(BackupRoot, "original")) ? Path.Combine(BackupRoot, "original") : "不存在"));
 
-            // 体检：补丁文件
+            // 体检：我们放的 DLL（QQ.exe 不在其中：新方案保留原版，没有内置副本可以比）
             if (string.IsNullOrEmpty(root))
             {
                 ctx.Add("bad", "没找到 QQ 安装目录（注册表卸载项和默认路径都没有）");
             }
             else
             {
-                foreach (var n in new[] { "QQ.exe", "dbghelp.dll", "winmm.dll" })
+                foreach (var n in new[] { "dbghelp.dll", "winmm.dll" })
                 {
                     string p = Path.Combine(root, n);
                     try
