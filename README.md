@@ -21,6 +21,27 @@
 `package.json` 的 `main` 被改成 `./app_launcher/LiteLoader.js`、多出 `app_launcher` 目录），
 安装和还原时都会自动用备份改回原版。插件和数据留着不删。
 
+## QQ 版本支持矩阵
+
+| QQ 版本 | 状态 | 说明 |
+|---|---|---|
+| 9.9.35-52892 | ✅ 已验证可用 | 非 pure shell 构建，实测见 [qqnt-liuli-theme#38](https://github.com/LilycleHeart/qqnt-liuli-theme/issues/38) |
+| 9.9.36-53644 | ❌ 当前方案无法生效 | `isPureShell=true`，原生壳直接从 `application.asar` 加载，不读取 `package.json` 的 `main`；实测分析见 [qqnt-liuli-theme#39](https://github.com/LilycleHeart/qqnt-liuli-theme/issues/39) |
+| 其它版本 | 未验证 | 安装前会检测架构，安装后会验证注入是否真正生效 |
+
+自查方法：在 QQ「设置 → 关于」查看完整版本，再打开
+`versions\<完整版本>\resources\app\package.json` 检查 `isPureShell`。字段缺失或为 `false` 时按普通构建处理；
+JSON 无法解析时记录警告但不阻断安装。
+
+检测到 `isPureShell=true` 时，安装器会在关闭 QQ、写入文件之前阻止安装，不再显示虚假的安装成功。
+可降级到 9.9.35-52892（需自行承担降级与自动更新风险），或等待 pure shell 适配；不要直接修改磁盘上的
+`package.json`，否则会触发 QQ 完整性校验。
+
+普通构建安装完成并拉起 QQ 后，安装器每 2 秒检查一次、最多等待 30 秒。只有本轮启动新建或更新了
+`%APPDATA%\LiteLoaderQQNT\liteLoader.log`，或琉璃插件的 `data\liuli-dsh-theme\plugin.log`，才判定注入生效。
+超时会在 GUI 明确警告；无界面 `/install` 返回退出码 2。此时可运行「还原」，或导出诊断包反馈。
+`liuli-hook.log` 只证明 hook 正在活动，**不作为注入成功信号**。
+
 ## 导出诊断包（用户来报问题时）
 
 右上角「导出诊断包」→ 桌面生成 `QQ诊断包-<时间>.zip`。
@@ -74,13 +95,14 @@ plugin-diag/<name>.zip 插件设置页导出的最新诊断包（可选；内容
   `[Main] … 加载失败`、`[dialog]`（LiteLoader 自己弹的报错正文）、`[fatal]`（主进程未捕获异常），
   命中就提示「看 LiteLoader/liteLoader.log 的 [Main]/[dialog] 行」，时间线也会并进去
 - **QQ 应用打补丁状态**：按新方案的落点逐条查——QQ 根目录的 `winmm.dll` / `dbghelp.dll` /
-  `hook.ini`（是否 `mode=active` 且含 `skipfullreads`）、`QQ.exe` 的腾讯数字签名（有没有被降级版换掉）、
-  每个 `versions/*/resources/app` 的 `liuli_loader.js`、`package.patched.json`（`main` 是否
-  `./liuli_loader.js`），以及**原版 `package.json` 是否仍是原版**（`main` 还是
-  `./application.asar/app_launcher/index.js`；被旧安装器改成 `./app_launcher/LiteLoader.js`
-  会被单独标出来）、有没有旧方案遗留的 `app_launcher` 目录；还包含 `versions/config.json`
-  和运行中 QQ 是否就是安装目录这份。补丁文件「内置补丁」判断保留精确哈希，但**大小相同、哈希不同**时
-  只作为中性提示（可能是较早的安装器构建，例如 winmm 的 PE 时间戳每次构建都不同；重跑安装器可对齐，不影响功能）
+  `hook.ini`（完整内容、是否 `mode=active` 且含 `skipfullreads`）、`liuli-hook.log` 尾部 80 行、
+  `QQ.exe` 的腾讯数字签名（有没有被降级版换掉）、每个 `versions/*/resources/app` 的 `isPureShell`、
+  `liuli_loader.js`、`package.patched.json`（`main` 是否 `./liuli_loader.js`），以及
+  **原版 `package.json` 是否仍是原版**（`main` 还是 `./application.asar/app_launcher/index.js`；
+  被旧安装器改成 `./app_launcher/LiteLoader.js` 会被单独标出来）、有没有旧方案遗留的 `app_launcher` 目录；
+  还包含 `versions` 目录列表与配置、运行中 QQ 是否就是安装目录这份、QQEX.exe 辅助进程存在性。
+  补丁文件「内置补丁」判断保留精确哈希，但**大小相同、哈希不同**时只作为中性提示
+  （可能是较早的安装器构建，例如 winmm 的 PE 时间戳每次构建都不同；重跑安装器可对齐，不影响功能）
 - **LiteLoader 本体**：版本、`store.js` 是否还有 `dirent.path`、是否含 `LiteLoader.path.plugins`、
   `runtime.js` 是否有 `unregisterPlugin`、关键文件大小/mtime
 - **显示器 / 显卡 / 会话**：显示器数量/分辨率/工作区/主屏、DPI、远程会话、WMI 显卡与驱动、内存

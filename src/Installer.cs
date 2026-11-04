@@ -63,6 +63,12 @@ namespace LiteLoaderInstaller
         static readonly Color TextSub = Color.FromArgb(0x7A, 0x6E, 0x72);
         static readonly Color Ok = Color.FromArgb(0x2E, 0x7D, 0x4F);
         static readonly Color Err = Color.FromArgb(0xC6, 0x28, 0x28);
+        static readonly Color Warn = Color.FromArgb(0xA0, 0x62, 0x00);
+
+        sealed class PureShellException : Exception
+        {
+            public PureShellException(string message) : base(message) { }
+        }
 
         TextBox qqBox;
         CheckBox pluginBox;
@@ -357,7 +363,14 @@ namespace LiteLoaderInstaller
                     string root = FindQQ();
                     if (root == null) throw new Exception("找不到 QQ");
                     HeadlessLine(w, "QQ: " + root);
-                    if (mode == "/install") f.Install(root, plugins, spMode);
+                    if (mode == "/install")
+                    {
+                        if (!f.Install(root, plugins, spMode))
+                        {
+                            HeadlessLine(w, "安装后验证未通过：QQ 已启动，但注入未生效");
+                            return 2;
+                        }
+                    }
                     else if (mode == "/restore") f.Restore(root);
                     else throw new Exception("未知参数 " + mode);
                     HeadlessLine(w, "OK");
@@ -384,22 +397,38 @@ namespace LiteLoaderInstaller
             bar.Visible = true;
             new Thread(delegate ()
             {
-                string done = null, fail = null;
+                string done = null, fail = null, dialog = null;
+                bool injectionOk = true;
                 try
                 {
-                    if (install) Install(root, plugins, spMode); else Restore(root);
-                    done = install ? "安装完成，QQ 已打开" : "还原完成，QQ 已打开";
+                    if (install) injectionOk = Install(root, plugins, spMode); else Restore(root);
+                    done = install
+                        ? (injectionOk ? "安装完成，注入已生效" : "文件已安装，但注入未生效")
+                        : "还原完成，QQ 已打开";
                     Log(done);
                 }
-                catch (Exception ex) { fail = "失败：" + ex.Message; Log(fail); }
+                catch (Exception ex)
+                {
+                    fail = "失败：" + ex.Message;
+                    if (ex is PureShellException) dialog = ex.Message;
+                    Log(fail);
+                }
                 BeginInvoke(new Action(delegate
                 {
                     bar.Visible = false;
                     qqBox.ReadOnly = false;
                     installBtn.Enabled = restoreBtn.Enabled = browseBtn.Enabled = pluginBox.Enabled = spBox.Enabled = true;
                     installBtn.Text = done != null && install ? "重新安装" : "一键安装";
-                    SetStatus(done ?? fail, done != null ? Ok : Err);
-                    if (fail != null) ToggleDetail(true);
+                    SetStatus(done ?? fail, fail != null ? Err : (injectionOk ? Ok : Warn));
+                    if (fail != null || !injectionOk) ToggleDetail(true);
+                    if (dialog != null)
+                        MessageBox.Show(this, dialog, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    else if (done != null && install && !injectionOk)
+                        MessageBox.Show(this,
+                            "QQ 已启动，但 30 秒内未检测到 LiteLoader 或琉璃插件的启动日志更新，注入未生效。\n\n"
+                            + "可点击「还原」恢复，或点击「导出诊断包」后反馈。\n"
+                            + "可能是 pure shell 构建不兼容，也可能是 hook 竞速失败。",
+                            Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }));
             }) { IsBackground = true }.Start();
         }
@@ -414,11 +443,12 @@ namespace LiteLoaderInstaller
         //                   app\package.patched.json（main 指向 ./liuli_loader.js）
         //   行为由 root\hook.ini 决定：mode = active / match = skipfullreads:1
         //   这样签名清单照常通过，主窗口 + 频道 + 腾讯文档（exApp）都不会再弹「文件已损坏」。
-        void Install(string root, bool plugins, string spMode)
+        bool Install(string root, bool plugins, string spMode)
         {
-            StopQQ();
             string[] apps = AppDirs(root);
             if (apps.Length == 0) throw new Exception("找不到 versions\\*\\resources\\app\\package.json");
+            RejectPureShell(apps);
+            StopQQ();
 
             string bk = Path.Combine(BackupRoot, "original");
             if (!Directory.Exists(bk)) { Directory.CreateDirectory(bk); Log("已创建原版备份目录 " + bk); }
@@ -472,7 +502,85 @@ namespace LiteLoaderInstaller
                     Log("提示：你的「文档」在 OneDrive 里，QQ 聊天记录也存在那儿。若 QQ 报「文件系统访问异常」，请到 QQ 设置 → 文件管理，把存储位置改到非 OneDrive 的目录（比如 D:\\Tencent Files）。");
             }
             catch { }
+            DateTime injectionStarted = DateTime.Now;
             StartQQ(root);
+            return VerifyInjection(injectionStarted);
+        }
+
+        static string AppVersion(string app)
+        {
+            try
+            {
+                var resources = Directory.GetParent(app);
+                if (resources != null && resources.Parent != null) return resources.Parent.Name;
+            }
+            catch { }
+            return "未知";
+        }
+
+        static bool ReadPureShell(string pkg, out string error)
+        {
+            error = null;
+            try
+            {
+                var map = MiniJson.AsObj(MiniJson.Parse(File.ReadAllText(pkg, Utf8)));
+                object value;
+                return map != null && map.TryGetValue("isPureShell", out value) && value is bool && (bool)value;
+            }
+            catch (Exception ex) { error = ex.Message; return false; }
+        }
+
+        void RejectPureShell(string[] apps)
+        {
+            foreach (var app in apps)
+            {
+                string version = AppVersion(app);
+                string error;
+                bool pureShell = ReadPureShell(Path.Combine(app, "package.json"), out error);
+                if (error != null)
+                {
+                    Log("isPureShell 状态未知（版本 " + version + "），JSON 解析失败，按非 pure shell 继续安装：" + error);
+                    continue;
+                }
+                if (!pureShell)
+                {
+                    Log("isPureShell=false（版本 " + version + "），继续安装");
+                    continue;
+                }
+                Log("检测到 isPureShell=true（版本 " + version + "），已阻止安装");
+                throw new PureShellException(
+                    "检测到 QQ " + version + " 为 pure shell 架构（isPureShell=true），当前安装方案无法生效，已阻止安装。\n\n"
+                    + "可选择：降级到 9.9.35-52892（已验证可用，需自行承担降级与自动更新风险），或等待作者适配。\n"
+                    + "技术背景见 qqnt-liuli-theme issue #39。");
+            }
+        }
+
+        bool VerifyInjection(DateTime started)
+        {
+            string[] signals =
+            {
+                Path.Combine(LLRoot, "liteLoader.log"),
+                Path.Combine(LLRoot, "data", "liuli-dsh-theme", "plugin.log")
+            };
+            Log("安装后验证：等待 LiteLoader 启动日志（每 2 秒检查，最多 30 秒）");
+            for (int attempt = 0; attempt < 15; attempt++)
+            {
+                foreach (var signal in signals)
+                {
+                    try
+                    {
+                        if (File.Exists(signal) && File.GetLastWriteTime(signal) >= started.AddSeconds(-2))
+                        {
+                            Log("安装后验证结果=成功（本轮启动信号：" + signal + "）");
+                            return true;
+                        }
+                    }
+                    catch { }
+                }
+                Thread.Sleep(2000);
+            }
+            Log("安装后验证结果=失败（30 秒内未检测到 liteLoader.log 或 plugin.log 的本轮更新），注入未生效");
+            return false;
         }
 
         // ---------- 还原 ----------
@@ -2644,17 +2752,26 @@ namespace LiteLoaderInstaller
                 {
                     bool bom = HasBom(pkg);
                     string main = null;
+                    string pureShell = "(未知)";
                     string err = null;
                     try
                     {
                         var map = MiniJson.AsObj(MiniJson.Parse(File.ReadAllText(pkg, Utf8)));
                         if (map == null) err = "顶层不是 JSON 对象";
-                        else main = MiniJson.Str(map, "main");
+                        else
+                        {
+                            main = MiniJson.Str(map, "main");
+                            pureShell = MiniJson.BoolText(map, "isPureShell");
+                        }
                     }
                     catch (Exception ex) { err = ex.Message; }
                     sb.AppendLine("      package.json（签名文件，必须保持原版）: " + new FileInfo(pkg).Length + " 字节  修改 " + File.GetLastWriteTime(pkg).ToString("yyyy-MM-dd HH:mm:ss")
                         + "  BOM=" + (bom ? "有   <<== JSON.parse 会失败" : "无")
                         + "  JSON=" + (err == null ? "正常" : "解析失败: " + err + "   <<=="));
+                    sb.AppendLine("      isPureShell = " + pureShell
+                        + (pureShell == "true" ? "   <<== pure shell 构建直接从 application.asar 加载，当前 package.json 换源方案无法生效" : ""));
+                    if (pureShell == "true")
+                        ctx.Add("bad", "版本 " + vname + " 是 pure shell 构建（isPureShell=true）：当前安装方案无法注入 LiteLoader，见 qqnt-liuli-theme issue #39");
                     if (err != null)
                         ctx.Add("bad", "版本 " + vname + " 的 package.json 解析失败: " + err + "（QQ 更新器可能改坏了；用安装器重装一次）");
                     if (main == null)
@@ -2788,7 +2905,8 @@ namespace LiteLoaderInstaller
                 bool iniSkip = iniText.IndexOf("skipfullreads", StringComparison.OrdinalIgnoreCase) >= 0;
                 sb.AppendLine("  hook.ini: 存在  mode含active=" + (iniActive ? "是" : "否   <<==")
                     + "  match含skipfullreads=" + (iniSkip ? "是" : "否   <<=="));
-                sb.AppendLine("      内容: " + Truncate(SanitizeText(Regex.Replace(iniText, @"\s+", " ")), 300));
+                sb.AppendLine("      内容（完整）:");
+                sb.AppendLine(SanitizeText(iniText));
                 if (!iniActive || !iniSkip)
                     ctx.Add("warn", "QQ 根目录的 hook.ini 不是安装器写的那份（缺 mode=active 或 match=skipfullreads:1），hook 可能不生效");
                 else
@@ -2799,6 +2917,18 @@ namespace LiteLoaderInstaller
                 sb.AppendLine("  hook.ini: 不存在   <<== hook 会退回 probe 模式（只记日志，不换源）");
                 ctx.Add("bad", "QQ 根目录缺 hook.ini：dbghelp.dll hook 会退回 probe 模式，LiteLoader 不会加载（重装安装器可修复）");
             }
+            string hookLog = Path.Combine(LLRoot, "liuli-hook.log");
+            sb.AppendLine("  liuli-hook.log: " + (File.Exists(hookLog) ? "存在" : "不存在")
+                + "（只证明 hook 活动，不能作为 LiteLoader 注入成功信号）");
+            if (File.Exists(hookLog))
+            {
+                foreach (var line in ReadTailLines(hookLog, 80))
+                    sb.AppendLine("      " + Truncate(SanitizeText(line), 500));
+            }
+            int qqexCount = 0;
+            foreach (var p in ctx.Procs)
+                if (!p.Extra && string.Equals(p.Name, "QQEX.exe", StringComparison.OrdinalIgnoreCase)) qqexCount++;
+            sb.AppendLine("  QQEX.exe 进程存在=" + (qqexCount > 0 ? "是" : "否") + "（共 " + qqexCount + " 个；辅助进程，不作为主进程或注入成功信号）");
             if (File.Exists(exe))
             {
                 string sig = SignatureText(exe);
