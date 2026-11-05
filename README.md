@@ -5,7 +5,7 @@
 1. 关闭 QQ
 2. 备份原版 `package.json`（每个 `versions\*\resources\app` 一份，只在第一次安装时备份）
 3. 在 QQ 根目录放 `winmm.dll`（代理，负责把 hook 带进 QQEX.exe 等子进程）、
-   `dbghelp.dll`（运行时 hook）和 `hook.ini`（`mode = active` / `match = skipfullreads:1`）
+   `dbghelp.dll`（运行时 hook）和 `hook.ini`（`mode = active` / `match = verifier`）
 4. 把 LiteLoaderQQNT 1.4.1 装到 `%APPDATA%\LiteLoaderQQNT`
 5. 可选：装上「琉璃」插件
 6. 每个 `versions\*\resources\app` 里加两个文件：`liuli_loader.js`（引导器）和
@@ -13,8 +13,10 @@
 7. 重新打开 QQ
 
 **一个被腾讯签名的文件都不改**（`application.asar` / `wrapper.node` / `major.node` / `package.json`），
-**也不替换 `QQ.exe`**：hook 只在 QQ 读 `package.json` 的 `main` 那一次把内容换成 `package.patched.json`，
-前面那次完整性校验放行原版。签名清单照常通过，所以主窗口、频道、腾讯文档（exApp）都不会再弹「文件已损坏」。
+**也不替换 `QQ.exe`**：hook 按 QQ 这次读取的**原始访问掩码**区分两种读——完整性校验读
+（未展开的 `GENERIC_READ`，`0x80000000`）放行原版，启动入口读（`FILE_GENERIC_READ`，`0x00120089`）
+换成 `package.patched.json`（`main` 指向 `./liuli_loader.js`）。判定不依赖「第几次读」的顺序，
+所以不会因为校验读晚到而放行入口读。签名清单照常通过，所以主窗口、频道、腾讯文档（exApp）都不会再弹「文件已损坏」。
 
 「还原」按钮把安装器加的这些文件删掉（`winmm.dll` / `dbghelp.dll` / `hook.ini` /
 `liuli_loader.js` / `package.patched.json`）。以前用旧安装器装过的（`QQ.exe` 被降级、
@@ -74,7 +76,8 @@ plugin-diag/<name>.zip 插件设置页导出的最新诊断包（可选；内容
   `[Main] … 加载失败`、`[dialog]`（LiteLoader 自己弹的报错正文）、`[fatal]`（主进程未捕获异常），
   命中就提示「看 LiteLoader/liteLoader.log 的 [Main]/[dialog] 行」，时间线也会并进去
 - **QQ 应用打补丁状态**：按新方案的落点逐条查——QQ 根目录的 `winmm.dll` / `dbghelp.dll` /
-  `hook.ini`（是否 `mode=active` 且含 `skipfullreads`）、`QQ.exe` 的腾讯数字签名（有没有被降级版换掉）、
+  `hook.ini`（是否 `mode=active` 且 `match` 用的是新判据 `verifier`；仍认旧的 `skipfullreads`，
+  但会提示旧判据可能静默失效）、`QQ.exe` 的腾讯数字签名（有没有被降级版换掉）、
   每个 `versions/*/resources/app` 的 `liuli_loader.js`、`package.patched.json`（`main` 是否
   `./liuli_loader.js`），以及**原版 `package.json` 是否仍是原版**（`main` 还是
   `./application.asar/app_launcher/index.js`；被旧安装器改成 `./app_launcher/LiteLoader.js`
@@ -181,7 +184,7 @@ pwsh -File build.ps1 -RebuildWinmm   # 强制重新编译 winmm 代理（默认�
   build.ps1 会比对哈希，误打成探针版会直接报错），`liuli_loader.js` 来自 `probe\b2\liuli_loader.js`。
   **不再打包降级版 QQ.exe**（新方案不替换 QQ.exe）；`payload\` 不再整体删除，源路径不存在时
   复用 `payload\` 里已有的 `dbghelp.dll` / `winmm.dll` / `liuli_loader.js` 并给出提示，两边都没有才报错。
-- `hook.ini` 不进 payload：内容是 `Installer.cs` 里内联写的（`mode = active` / `match = skipfullreads:1` / `log =` 指向 `%APPDATA%\LiteLoaderQQNT\liuli-hook.log` / `sp =` 由「防检测增强」选项决定，默认 `off`），
+- `hook.ini` 不进 payload：内容是 `Installer.cs` 里内联写的（`mode = active` / `match = verifier` / `log =` 指向 `%APPDATA%\LiteLoaderQQNT\liuli-hook.log` / `sp =` 由「防检测增强」选项决定，默认 `off`），
   安装时落到 QQ 根目录（`dbghelp.dll` 优先读自身同目录的 `hook.ini`；`C:\liuli-b2` 只是调试回退，安装器不再往那儿写）。
 - **winmm 默认不重编**：`winmm-proxy\winmm.c` / `build.cmd` 不比 `payload\winmm.dll` 新、且 payload 里有时，
   直接复用。MSVC 每次编译的 PE 头 `TimeDateStamp` 都不同，重编会让用户已装好的 winmm 哈希永远对不上，

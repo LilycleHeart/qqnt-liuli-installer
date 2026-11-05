@@ -360,6 +360,8 @@ namespace LiteLoaderInstaller
                     if (mode == "/install") f.Install(root, plugins, spMode);
                     else if (mode == "/restore") f.Restore(root);
                     else throw new Exception("未知参数 " + mode);
+                    // #35：自动启动 QQ 失败时把原因写进 installer.log（诊断包会带走）
+                    if (StartQQNote != null) HeadlessLine(w, StartQQNote);
                     HeadlessLine(w, "OK");
                     return 0;
                 }
@@ -388,8 +390,12 @@ namespace LiteLoaderInstaller
                 try
                 {
                     if (install) Install(root, plugins, spMode); else Restore(root);
-                    done = install ? "安装完成，QQ 已打开" : "还原完成，QQ 已打开";
+                    // #35：StartQQ 没能以普通权限拉起 QQ 时，别谎称「QQ 已打开」（状态栏只放
+                    // 一句可执行的话，完整原因进日志/详情）
+                    done = (install ? "安装完成" : "还原完成")
+                         + (StartQQNote == null ? "，QQ 已打开" : "；请手动双击 QQ 图标启动");
                     Log(done);
+                    if (StartQQNote != null) Log(StartQQNote);
                 }
                 catch (Exception ex) { fail = "失败：" + ex.Message; Log(fail); }
                 BeginInvoke(new Action(delegate
@@ -410,9 +416,10 @@ namespace LiteLoaderInstaller
         //   做法是在 QQ 根目录放两个我们自己的 DLL：
         //     winmm.dll  —— 代理，负责把同目录的 dbghelp.dll 加载进来（QQEX.exe 自己不加载 dbghelp）
         //     dbghelp.dll—— 运行时 hook：拦 CreateFileW 对 resources\app\package.json 的读取，
-        //                   签名校验那一次（第 1 次全文读）放行原版，「读 main」那次换成
-        //                   app\package.patched.json（main 指向 ./liuli_loader.js）
-        //   行为由 root\hook.ini 决定：mode = active / match = skipfullreads:1
+        //                   按「原始 dwDesiredAccess」区分：QQ 的完整性校验读（0x80000000）
+        //                   放行原版，启动入口读（0x00120089）换成 app\package.patched.json
+        //                   （main 指向 ./liuli_loader.js）
+        //   行为由 root\hook.ini 决定：mode = active / match = verifier
         //   这样签名清单照常通过，主窗口 + 频道 + 腾讯文档（exApp）都不会再弹「文件已损坏」。
         void Install(string root, bool plugins, string spMode)
         {
@@ -550,13 +557,18 @@ namespace LiteLoaderInstaller
         const string MainFieldPattern = "(\"main\"\\s*:\\s*)(\"(?:[^\"\\\\]|\\\\.)*\")";
 
         // hook.ini 四行：active + 不依赖版本偏移的匹配条件 + 日志位置 + sp（防检测增强档位）。
-        // （第 1 次「全文读」是完整性校验，放行原版；之后「读 main」那次给 patched 版）
+        // match = verifier：按「这一次读取的原始 dwDesiredAccess」区分校验读和入口读 ——
+        //   QQ 的完整性校验读用未展开的 GENERIC_READ(0x80000000)，启动入口读用展开后的
+        //   FILE_GENERIC_READ(0x00120089)（四份诊断包 100% 可分）。校验读放行原版，其余
+        //   全文读换成 package.patched.json。这是 installer#3（首次读取顺序不稳定）的修复：
+        //   旧的 skipfullreads:1 只数「第几次全文读」，校验读不保证先发生，入口读会被放行。
+        //   skipfullreads:1 仍是旧语义，保留作回滚开关（dbghelp.dll 支持两种条件）。
         // sp = off（默认，完全不介入）| observe（只挂钩记录）| apply（实际中和/拦截）。
         // dbghelp.dll 优先读自身同目录的 hook.ini，所以只写到 QQ 根目录即可。
         // 日志写到 LLRoot（%APPDATA%，QQ 进程可写；Program Files 写不了），不在用户机器建调试目录。
         static string HookIniText(string spMode)
         {
-            return "mode = active\r\nmatch = skipfullreads:1\r\nlog = "
+            return "mode = active\r\nmatch = verifier\r\nlog = "
                 + Path.Combine(LLRoot, "liuli-hook.log") + "\r\nsp = " + spMode + "\r\n";
         }
 
@@ -759,7 +771,7 @@ namespace LiteLoaderInstaller
             {
                 throw new Exception("写 " + p + " 失败（" + ex.Message + "）。QQ 目录需要管理员权限，请右键「以管理员身份运行」。");
             }
-            Log("已写 " + p + "（active / skipfullreads:1 / log → " + Path.Combine(LLRoot, "liuli-hook.log") + " / sp = " + spMode + "）");
+            Log("已写 " + p + "（active / match = verifier / log → " + Path.Combine(LLRoot, "liuli-hook.log") + " / sp = " + spMode + "）");
         }
 
         // 删 hook.ini：只删 QQ 根目录这份
@@ -2785,14 +2797,22 @@ namespace LiteLoaderInstaller
             {
                 string iniText = ReadTextSafe(ini, 64 * 1024);
                 bool iniActive = iniText.IndexOf("active", StringComparison.OrdinalIgnoreCase) >= 0;
+                // match 判定条件：新的是 verifier（按原始 dwDesiredAccess 区分校验读/入口读）。
+                // 旧的 skipfullreads 仍被 dbghelp.dll 支持（回滚开关），用户手动改回去时
+                // 不能报「不是安装器写的那份」，但要在体检里明确指出它可能静默失效。
+                bool iniVerifier = iniText.IndexOf("verifier", StringComparison.OrdinalIgnoreCase) >= 0;
                 bool iniSkip = iniText.IndexOf("skipfullreads", StringComparison.OrdinalIgnoreCase) >= 0;
+                string iniMatch = iniVerifier ? "verifier"
+                    : (iniSkip ? "skipfullreads（旧判据）" : "无   <==");
                 sb.AppendLine("  hook.ini: 存在  mode含active=" + (iniActive ? "是" : "否   <<==")
-                    + "  match含skipfullreads=" + (iniSkip ? "是" : "否   <<=="));
+                    + "  match判定=" + iniMatch);
                 sb.AppendLine("      内容: " + Truncate(SanitizeText(Regex.Replace(iniText, @"\s+", " ")), 300));
-                if (!iniActive || !iniSkip)
-                    ctx.Add("warn", "QQ 根目录的 hook.ini 不是安装器写的那份（缺 mode=active 或 match=skipfullreads:1），hook 可能不生效");
+                if (!iniActive || (!iniVerifier && !iniSkip))
+                    ctx.Add("warn", "QQ 根目录的 hook.ini 不是安装器写的那份（缺 mode=active 或 match=verifier），hook 可能不生效");
+                else if (!iniVerifier)
+                    ctx.Add("warn", "hook.ini 用的是旧判据 skipfullreads：校验读不保证先于入口读，可能静默失效；把 match 改成 verifier（或用新版安装器重装）可修");
                 else
-                    ctx.Add("ok", "hook.ini 内容正确（mode = active / match = skipfullreads:1）");
+                    ctx.Add("ok", "hook.ini 内容正确（mode = active / match = verifier）");
             }
             else
             {
@@ -4220,12 +4240,20 @@ namespace LiteLoaderInstaller
             Log("QQ 已关闭");
         }
 
+        // 自动拉起 QQ 的结果：null = 已交给 explorer 代启动（普通权限）；
+        // 非 null = 这次没能以普通权限启动 QQ，内容是要告诉用户的话（由 Run / Headless 输出）。
+        static string StartQQNote;
+
         static void StartQQ(string root)
         {
+            StartQQNote = null;
             string exe = Path.Combine(root, "QQ.exe");
             // 安装器是提权进程，直接 Process.Start 会让 QQ 继承管理员令牌。
             // 带管理员令牌跑 QQ 时，OneDrive 里的云文件（很多人「文档」被 OneDrive 接管，
             // 聊天记录就在那）会访问失败，QQ 就弹「聊天记录所在文件系统访问异常」；
+            // 中完整性的输入法（RIME 小狼毫这类 TSF）也无法向高完整性窗口注入，
+            // 表现为「QQ 里输入法打不出字」（issue #35：四份诊断包里唯一一个
+            // 「已提升(管理员)」的 QQ 主进程，正是安装器报「安装完成，QQ 已打开」后 1 秒起来的）。
             // 之后用户再用普通方式启动，文件句柄/权限也不一致。
             // 交给 explorer 代启动，QQ 回到普通权限。
             try
@@ -4234,7 +4262,14 @@ namespace LiteLoaderInstaller
                 return;
             }
             catch { }
-            Process.Start(new ProcessStartInfo(exe) { WorkingDirectory = root, UseShellExecute = true });
+            // #35 修复：这里原来是静默降级 Process.Start(exe) —— 安装器是管理员进程，
+            // QQ 会直接继承高完整性令牌，输入法打不出字，用户还完全不知道发生过什么。
+            // 现在宁可不自动启动，也要把「请手动双击 QQ 图标」明确告诉用户。
+            // 为什么不改用 runas /trustlevel:0x20000 这类降权启动：那是 SAFER 受限令牌，
+            // 只砍掉管理员特权，**不保证降低完整性级别**，UIPI/TSF 仍按高完整性对待，
+            // 解决不了输入法问题，反而可能让 QQ 读写自己目录时被限制。
+            StartQQNote = "没能以普通权限自动启动 QQ：请手动双击桌面/开始菜单的 QQ 图标启动。"
+                + "（安装器是管理员权限，直接替你启动会让 QQ 继承管理员令牌，输入法可能打不出字。）";
         }
 
         static Stream Res(string name)
