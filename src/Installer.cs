@@ -65,11 +65,6 @@ namespace LiteLoaderInstaller
         static readonly Color Err = Color.FromArgb(0xC6, 0x28, 0x28);
         static readonly Color Warn = Color.FromArgb(0xA0, 0x62, 0x00);
 
-        sealed class PureShellException : Exception
-        {
-            public PureShellException(string message) : base(message) { }
-        }
-
         TextBox qqBox;
         CheckBox pluginBox;
         ComboBox spBox;
@@ -397,7 +392,7 @@ namespace LiteLoaderInstaller
             bar.Visible = true;
             new Thread(delegate ()
             {
-                string done = null, fail = null, dialog = null;
+                string done = null, fail = null;
                 bool injectionOk = true;
                 try
                 {
@@ -407,12 +402,7 @@ namespace LiteLoaderInstaller
                         : "还原完成，QQ 已打开";
                     Log(done);
                 }
-                catch (Exception ex)
-                {
-                    fail = "失败：" + ex.Message;
-                    if (ex is PureShellException) dialog = ex.Message;
-                    Log(fail);
-                }
+                catch (Exception ex) { fail = "失败：" + ex.Message; Log(fail); }
                 BeginInvoke(new Action(delegate
                 {
                     bar.Visible = false;
@@ -421,13 +411,11 @@ namespace LiteLoaderInstaller
                     installBtn.Text = done != null && install ? "重新安装" : "一键安装";
                     SetStatus(done ?? fail, fail != null ? Err : (injectionOk ? Ok : Warn));
                     if (fail != null || !injectionOk) ToggleDetail(true);
-                    if (dialog != null)
-                        MessageBox.Show(this, dialog, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    else if (done != null && install && !injectionOk)
+                    if (done != null && install && !injectionOk)
                         MessageBox.Show(this,
                             "QQ 已启动，但 30 秒内未检测到 LiteLoader 或琉璃插件的启动日志更新，注入未生效。\n\n"
-                            + "可点击「还原」恢复，或点击「导出诊断包」后反馈。\n"
-                            + "可能是 pure shell 构建不兼容，也可能是 hook 竞速失败。",
+                            + "请先完全退出并重新打开 QQ；同版本实测第二次启动可恢复。\n"
+                            + "若仍未生效，可点击「还原」恢复，或点击「导出诊断包」后反馈。",
                             Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }));
             }) { IsBackground = true }.Start();
@@ -447,7 +435,6 @@ namespace LiteLoaderInstaller
         {
             string[] apps = AppDirs(root);
             if (apps.Length == 0) throw new Exception("找不到 versions\\*\\resources\\app\\package.json");
-            RejectPureShell(apps);
             StopQQ();
 
             string bk = Path.Combine(BackupRoot, "original");
@@ -505,54 +492,6 @@ namespace LiteLoaderInstaller
             DateTime injectionStarted = DateTime.Now;
             StartQQ(root);
             return VerifyInjection(injectionStarted);
-        }
-
-        static string AppVersion(string app)
-        {
-            try
-            {
-                var resources = Directory.GetParent(app);
-                if (resources != null && resources.Parent != null) return resources.Parent.Name;
-            }
-            catch { }
-            return "未知";
-        }
-
-        static bool ReadPureShell(string pkg, out string error)
-        {
-            error = null;
-            try
-            {
-                var map = MiniJson.AsObj(MiniJson.Parse(File.ReadAllText(pkg, Utf8)));
-                object value;
-                return map != null && map.TryGetValue("isPureShell", out value) && value is bool && (bool)value;
-            }
-            catch (Exception ex) { error = ex.Message; return false; }
-        }
-
-        void RejectPureShell(string[] apps)
-        {
-            foreach (var app in apps)
-            {
-                string version = AppVersion(app);
-                string error;
-                bool pureShell = ReadPureShell(Path.Combine(app, "package.json"), out error);
-                if (error != null)
-                {
-                    Log("isPureShell 状态未知（版本 " + version + "），JSON 解析失败，按非 pure shell 继续安装：" + error);
-                    continue;
-                }
-                if (!pureShell)
-                {
-                    Log("isPureShell=false（版本 " + version + "），继续安装");
-                    continue;
-                }
-                Log("检测到 isPureShell=true（版本 " + version + "），已阻止安装");
-                throw new PureShellException(
-                    "检测到 QQ " + version + " 为 pure shell 架构（isPureShell=true），当前安装方案无法生效，已阻止安装。\n\n"
-                    + "可选择：降级到 9.9.35-52892（已验证可用，需自行承担降级与自动更新风险），或等待作者适配。\n"
-                    + "技术背景见 qqnt-liuli-theme issue #39。");
-            }
         }
 
         bool VerifyInjection(DateTime started)
@@ -2768,10 +2707,7 @@ namespace LiteLoaderInstaller
                     sb.AppendLine("      package.json（签名文件，必须保持原版）: " + new FileInfo(pkg).Length + " 字节  修改 " + File.GetLastWriteTime(pkg).ToString("yyyy-MM-dd HH:mm:ss")
                         + "  BOM=" + (bom ? "有   <<== JSON.parse 会失败" : "无")
                         + "  JSON=" + (err == null ? "正常" : "解析失败: " + err + "   <<=="));
-                    sb.AppendLine("      isPureShell = " + pureShell
-                        + (pureShell == "true" ? "   <<== pure shell 构建直接从 application.asar 加载，当前 package.json 换源方案无法生效" : ""));
-                    if (pureShell == "true")
-                        ctx.Add("bad", "版本 " + vname + " 是 pure shell 构建（isPureShell=true）：当前安装方案无法注入 LiteLoader，见 qqnt-liuli-theme issue #39");
+                    sb.AppendLine("      isPureShell = " + pureShell + "（仅架构标记，不能单独用于判定注入兼容性）");
                     if (err != null)
                         ctx.Add("bad", "版本 " + vname + " 的 package.json 解析失败: " + err + "（QQ 更新器可能改坏了；用安装器重装一次）");
                     if (main == null)

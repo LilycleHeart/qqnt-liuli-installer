@@ -21,26 +21,24 @@
 `package.json` 的 `main` 被改成 `./app_launcher/LiteLoader.js`、多出 `app_launcher` 目录），
 安装和还原时都会自动用备份改回原版。插件和数据留着不删。
 
-## QQ 版本支持矩阵
+## 已验证版本与首次启动
 
 | QQ 版本 | 状态 | 说明 |
 |---|---|---|
-| 9.9.35-52892 | ✅ 已验证可用 | 非 pure shell 构建，实测见 [qqnt-liuli-theme#38](https://github.com/LilycleHeart/qqnt-liuli-theme/issues/38) |
-| 9.9.36-53644 | ❌ 当前方案无法生效 | `isPureShell=true`，原生壳直接从 `application.asar` 加载，不读取 `package.json` 的 `main`；实测分析见 [qqnt-liuli-theme#39](https://github.com/LilycleHeart/qqnt-liuli-theme/issues/39) |
-| 其它版本 | 未验证 | 安装前会检测架构，安装后会验证注入是否真正生效 |
+| 9.9.35-52892 | ✅ 已验证可用 | 实测见 [qqnt-liuli-theme#38](https://github.com/LilycleHeart/qqnt-liuli-theme/issues/38) |
+| 9.9.36-53644 | ✅ 已验证可用 | 同机完整重启后，LiteLoader 与琉璃均成功加载；该版本的 `isPureShell=true` 不影响现有方案生效 |
+| 其它版本 | 未验证 | 安装后会验证注入是否真正生效 |
 
-自查方法：在 QQ「设置 → 关于」查看完整版本，再打开
-`versions\<完整版本>\resources\app\package.json` 检查 `isPureShell`。字段缺失或为 `false` 时按普通构建处理；
-JSON 无法解析时记录警告但不阻断安装。
+`isPureShell` 仅作为诊断信息收集，不能单独用来判断兼容性，也不会阻止安装。
+首次安装后如果设置里没有「琉璃」，请先**完全退出 QQ 再重新打开**。同机日志显示，首次启动与重启后的
+`package.json` 读取顺序可能不同，`skipfullreads:1` 有机会在首次启动时放错入口读取；不能仅凭 hook 日志
+有 `rewrite` 就认定 LiteLoader 已加载。不要直接修改磁盘上的 `package.json`，否则会触发 QQ 完整性校验。
 
-检测到 `isPureShell=true` 时，安装器会在关闭 QQ、写入文件之前阻止安装，不再显示虚假的安装成功。
-可降级到 9.9.35-52892（需自行承担降级与自动更新风险），或等待 pure shell 适配；不要直接修改磁盘上的
-`package.json`，否则会触发 QQ 完整性校验。
-
-普通构建安装完成并拉起 QQ 后，安装器每 2 秒检查一次、最多等待 30 秒。只有本轮启动新建或更新了
+安装完成并拉起 QQ 后，安装器每 2 秒检查一次、最多等待 30 秒。只有本轮启动新建或更新了
 `%APPDATA%\LiteLoaderQQNT\liteLoader.log`，或琉璃插件的 `data\liuli-dsh-theme\plugin.log`，才判定注入生效。
-超时会在 GUI 明确警告；无界面 `/install` 返回退出码 2。此时可运行「还原」，或导出诊断包反馈。
-`liuli-hook.log` 只证明 hook 正在活动，**不作为注入成功信号**。
+超时会在 GUI 明确警告并建议先完全重启 QQ；无界面 `/install` 返回退出码 2。
+若重启后仍未生效，可运行「还原」，或导出诊断包反馈。`liuli-hook.log` 只证明 hook 正在活动，
+**不作为注入成功信号**。
 
 ## 导出诊断包（用户来报问题时）
 

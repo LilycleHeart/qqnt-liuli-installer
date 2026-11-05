@@ -18,7 +18,7 @@
 | 渲染进程注入失败/JS 报错 | 每次启动的渲染进程错误环形缓冲（onerror/unhandledrejection/console.error），转发到 `session.log` | 插件渲染进程 |
 | 打补丁的文件被 QQ 更新覆盖 | `QQ.exe`/`dbghelp.dll`/`winmm.dll` 是否存在、大小、版本、SHA256、是否为安装器内置补丁；`versions` 版本号与运行中进程 exe 路径是否一致 | 安装器 |
 | `package.json` / `app_launcher` 被改坏/没改到 | 每个 `app` 的 `main` 字段、`app_launcher/LiteLoader.js` 是否存在且内容正确、是否有未打补丁的 app 目录 | 安装器 |
-| pure shell 构建直接从 `application.asar` 加载，`package.json` 换源结构性无效 | 每个版本的 `isPureShell` 原始值；安装前拦截日志；安装后本轮 `liteLoader.log` / `plugin.log` 验证结果 | 安装器 |
+| 首次启动的 `package.json` 读取序列变化，`skipfullreads:1` 可能放行入口读取 | 对照 `liuli-hook.log` 的 `fr`、`acc`、`decision` 与调用栈；结合本轮 `liteLoader.log` / `plugin.log` 是否存在判断是否真的注入 | 安装器 |
 | hook 活着但 LiteLoader 主入口没执行 | `hook.ini` 完整内容、`liuli-hook.log` 尾部 80 行；与 LiteLoader/插件本轮启动日志缺失对照（hook 日志本身不算成功） | 安装器 |
 | LiteLoader 本体被覆盖成官方版（`dirent.path` 崩溃） | 本体版本、`src/main/store.js` 是否含 `LiteLoader.path.plugins` 修复、`src/main/runtime.js` 是否有 `unregisterPlugin` | 安装器 |
 | 杀软/受控文件夹访问拦截 | Defender CFA 状态、拦截事件 1123/1124/1127/1128、Application 错误事件 | 安装器 |
@@ -98,7 +98,7 @@ plugin-diag/<name>.zip  新增：插件设置页导出的诊断包（取 data/li
    - 插件 `diag/` 里导出的诊断包（文件名、大小、时间）。
 4. `---------- QQ 应用打补丁状态 ----------`
    - 每个 `versions/*/resources/app`：`main` 与 `isPureShell` 字段、`app_launcher/LiteLoader.js` 存在与内容、
-     `package.json` 是否 BOM/能否解析、是否被 QQ 更新器重置；`isPureShell=true` 必须产生自动体检问题项；
+     `package.json` 是否 BOM/能否解析、是否被 QQ 更新器重置；`isPureShell` 仅是架构元数据，不单独产生兼容性问题项；
    - `QQ.exe` 文件版本、`versions` 目录列表与 `versions/config.json`；
    - `hook.ini` 完整内容、`liuli-hook.log` 尾部 80 行（只证明 hook 活动，不能据此判定注入成功）；
    - 运行中的 QQ.exe 路径是否等于安装目录（从进程节复用），QQEX.exe 进程存在性与数量（辅助进程，不当主进程）。
