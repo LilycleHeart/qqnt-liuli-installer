@@ -14,7 +14,7 @@
 #     MSVC 每次编译的 PE 头 TimeDateStamp 都不一样，重编会让用户已经装好的 winmm 哈希对不上，
 #     被诊断包误报成「不是安装器内置补丁」。需要强制重编时用 -RebuildWinmm。
 param(
-    [string]$HookDbghelp = 'D:\Agent project\qq-liteloader\probe\b2\dbghelp.dll',
+    [string]$HookDbghelp = '',
     [string]$LiuliLoaderJs = 'D:\Agent project\qq-liteloader\probe\b2\liuli_loader.js',
     [string]$PluginRoot = 'D:\Agent project\qq-liteloader\liuli-plugin-work',
     [string]$PluginDirName = 'qqnt-liuli-theme',
@@ -46,9 +46,27 @@ function Get-PayloadFile {
 
 # --- payload 文件 ---
 # 不再打包补丁 QQ.exe：新方案保留原版 QQ.exe（腾讯签名），一个被签名的文件都不改。
-# dbghelp.dll 用 probe\b2 的「生效版」hook（不是旧的文件校验补丁）：运行时拦 CreateFileW，
-# 「读 main」那次换成 app\package.patched.json，签名校验那次放行原版。
-Get-PayloadFile -SourcePath $HookDbghelp -PayloadName 'dbghelp.dll' -What 'package.json hook dbghelp.dll（probe\b2 生效版）'
+# dbghelp.dll 用「生效版」hook（不是旧的文件校验补丁）：运行时拦 CreateFileW，
+# 「读 main」那次换成 app\package.patched.json，校验读放行原版。
+#
+# hook DLL 来源（按优先级）：
+#   1. -HookDbghelp 显式传入
+#   2. hook\dbghelp.dll —— 仓库内源码 hook\ 用 hook\build.cmd 编出来的（推荐，源码随仓库版本化）
+#   3. probe\b2\dbghelp.dll —— 老的外部构建目录（兼容旧工作流）
+if (-not $HookDbghelp) {
+    $hookCandidates = @(
+        (Join-Path $here 'hook\dbghelp.dll'),
+        'D:\Agent project\qq-liteloader\probe\b2\dbghelp.dll'
+    )
+    foreach ($cand in $hookCandidates) {
+        if ($cand -and (Test-Path -LiteralPath $cand -PathType Leaf)) { $HookDbghelp = $cand; break }
+    }
+    if (-not $HookDbghelp) {
+        throw '找不到 dbghelp.dll：先在 installer\hook 里跑 build.cmd 生成 hook\dbghelp.dll，或用 -HookDbghelp 指定。'
+    }
+    Write-Host ("hook DLL: " + $HookDbghelp)
+}
+Get-PayloadFile -SourcePath $HookDbghelp -PayloadName 'dbghelp.dll' -What 'package.json hook dbghelp.dll（生效版）'
 Get-PayloadFile -SourcePath $LiuliLoaderJs -PayloadName 'liuli_loader.js' -What '引导器 liuli_loader.js'
 
 # 防呆：probe\b2 里同时有「探针版」dbghelp.probe.dll（只记日志、不换源）。

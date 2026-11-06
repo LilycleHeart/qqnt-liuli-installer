@@ -1,0 +1,148 @@
+; =============================================================================
+;  hook.ini  --  b2 dbghelp.dll (QQNT package.json redirect) configuration
+;
+;  Where the DLL looks for this file (the FIRST one that exists wins):
+;    1) the path named by the LIULI_CFG environment variable
+;         -- highest priority, debugging override
+;    2) hook.ini in the SAME DIRECTORY as this dbghelp.dll
+;         -- the PRODUCT location: ship hook.ini next to dbghelp.dll in the
+;            QQ root, i.e.  C:\Program Files\Tencent\QQNT\hook.ini
+;    3) C:\liuli-b2\hook.ini
+;         -- the old debug path, kept only as a fallback
+;
+;  Keep this file ASCII or UTF-8.  If no file is present, the DLL stays in
+;  PROBE mode (log only), which is safe.
+;
+;  Line format:  key = value
+;  Comments:     a line starting with '#' or ';' or '//',
+;                or an inline '#' preceded by a space.
+;  Every environment variable (LIULI_*) overrides the same key here.
+; =============================================================================
+
+; probe = log only      active = rewrite the matched read
+; off   = do not even install the hook (boot/skip lines only)
+mode = probe
+
+; ---------------------------------------------------------------------------
+; match = when to return package.patched.json instead of the real package.json
+;
+; Several conditions separated by ',' are AND'ed.  Prefix a condition with '!'
+; to negate it.  NO match line in active mode  =>  falls back to probe.
+;
+;   seq:N              the N-th hit in this process      (e.g. seq:2)
+;   seqmin:N            hit N and every later one
+;   skipfullreads:N     count only "full content reads" (dwDesiredAccess has
+;                       FILE_READ_DATA 0x0001, or is exactly GENERIC_READ
+;                       0x80000000).  The first N such reads pass the original
+;                       file through; read N+1 and later get the patched one.
+;                       Attribute-only opens (FILE_READ_ATTRIBUTES 0x80 ...) are
+;                       not counted and never match this condition, even with
+;                       '!'.  Offset independent -> survives QQNT upgrades.
+;   auto                alias of skipfullreads:1  (verifier first, Node next)
+;   module:SUBSTR       direct caller module name contains SUBSTR (ci, no .dll
+;                       suffix needed: "node", "QQNT", "libuv", ...)
+;   stackmodule:SUBSTR  any stack frame is inside that module
+;   addr:MOD+0xOFFSET   direct caller == module base + offset.
+;                       Copy the value straight from the probe log field
+;                       "caller=QQ.exe+0x8F1A2C"  ->  addr:QQ.exe+0x8F1A2C
+;   tid:N               only in a specific thread (debugging)
+;   all                 always (still restricted to read-only opens)
+; ---------------------------------------------------------------------------
+; Cheap and usually enough when the order is stable: verifier first, Node second
+; match = seq:2
+
+; Best default: the verifier's SHA256 pass is the 1st full-content read, every
+; later full read (Electron reading "main") gets package.patched.json.
+; Attribute/stat reads stay untouched.  No hard-coded offsets.
+; match = skipfullreads:1
+; match = auto
+
+; Node in its own module (safest if the modules are separate)
+; match = module:node
+
+; Node statically linked into QQ.exe -> only the exact offset can tell them apart
+; match = addr:QQ.exe+0x8F1A2C
+
+; Combined: second hit AND from that module
+; match = seq:2, module:QQNT.dll
+
+; ---------------------------------------------------------------------------
+; Where the patched package.json lives.
+; Empty/omitted => "package.patched.json" next to the requested package.json
+;
+; patched = C:\Program Files\Tencent\QQNT\resources\app\package.patched.json
+; ---------------------------------------------------------------------------
+
+; 1 = ignore the process-role check (--type= / --exApp).  Debugging only.
+force = 0
+
+; 1 = write the full command line into the log once per process (useful, but it
+; exposes paths; set 0 if you do not want that in the log)
+cmdline = 1
+
+; milliseconds to wait before installing the hook (0 = install as early as
+; possible, which is what we want: the QQ verifier runs very early)
+init_delay_ms = 0
+
+; log file.  Built-in default is C:\liuli-b2\hook.log (debug path).
+; A product install does NOT create C:\liuli-b2: the installer sets this key to
+; a user-writable place, i.e.
+;   log = <%APPDATA%\LiteLoaderQQNT>\liuli-hook.log
+;   (expanded:  ...\AppData\Roaming\LiteLoaderQQNT\liuli-hook.log)
+; The DLL does NOT expand environment variables here: the install has to write
+; the real absolute path, "%APPDATA%" would otherwise be taken literally.
+; log = C:\liuli-b2\hook.log
+
+; ---------------------------------------------------------------------------
+; Self-protection / anti-detection ("sp" keys)
+;
+; These hook the verifier / damage-dialog / handle side.  They do NOT change
+; the package.json redirect above: mode/match/patched keep working on their
+; own.  Key names are case-insensitive, and every LIULI_SP* environment
+; variable overrides the same key here (same rule as the keys above).
+;
+;   sp = off | observe | apply          (default observe)
+;        off     = do not engage at all (no sp hooks, no byte patches)
+;        observe = hook and log only, never change behaviour
+;        apply   = actually neutralize / block what sp_targets selects
+;
+;   sp_targets = comma separated        (default msgbox,ntquery,handle)
+;        msgbox   recognize the "file is damaged, reinstall QQ" message box
+;        ntquery  NtQueryInformationProcess anti-debug probe
+;        handle   handle-trace disguise, level 1
+;        sigE / sigD / sigB   AOB targets inside wrapper.node / QQNT.dll
+;
+;   *** WARNING: sigE / sigD / sigB are NOT hooked by default and must be
+;       listed explicitly.  Their detours pass exactly 4 arguments through,
+;       while the real argument count of those functions is unknown; with
+;       more than 4 arguments even observe can crash QQ.  sigB is a node
+;       internal function -- never neutralize it under apply. ***
+;
+;   sp_hide = 0 | 1                     (default 0)
+;        1 = drop our dbghelp.dll / winmm.dll from the K32EnumProcessModules
+;            list (apply only, needs its own verification; the code also
+;            requires "enum" to be present in sp_targets)
+;
+;   sp_hard = 0 | 1                     (default 0)
+;        1 = under apply overwrite bytes (VirtualProtect + ret) instead of
+;            hooking.  sigB is never byte-patched.
+;
+;   sp_ret = 0 | 1                      (default 0)
+;        the "clean" value returned when apply neutralizes sigE / sigD
+;        (which of 0 / 1 means "no anomaly" must be measured on real QQ)
+;
+;   Level-1 handle disguise is ALWAYS on: while "handle" is in sp_targets
+;   (it is, by default), GetFinalPathNameByHandleW and
+;   GetFileInformationByHandle(Ex) answer with the ORIGINAL package.json for
+;   the patched handles we handed out.  sp=observe/apply does not change
+;   that; it only touches our own handles, zero side effects.
+;
+;   Probe build (dbghelp.probe.dll): whatever this file / the environment
+;   says, sp is forced back to observe and no byte is ever patched.
+; ---------------------------------------------------------------------------
+
+sp = observe
+; sp_targets = msgbox,ntquery,handle     ; default; sigE/sigD/sigB can crash QQ
+sp_hide = 0
+sp_hard = 0
+sp_ret  = 0

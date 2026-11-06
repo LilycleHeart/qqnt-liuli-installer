@@ -7,3 +7,5 @@ dist/
 *.exp
 *.lib
 winmm-proxy/build.log
+hook/obj/
+hook/build.log
