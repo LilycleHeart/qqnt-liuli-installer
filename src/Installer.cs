@@ -17,8 +17,8 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyVersion("1.1.1.0")]
-[assembly: AssemblyFileVersion("1.1.1.0")]
+[assembly: AssemblyVersion("1.1.2.0")]
+[assembly: AssemblyFileVersion("1.1.2.0")]
 
 namespace LiteLoaderInstaller
 {
@@ -669,14 +669,24 @@ namespace LiteLoaderInstaller
         }
 
         // 把被旧方案改过的 package.json 恢复成原版：优先用备份 package.N.json；
-        // 没有备份时只把 main 的值改回原始值（其它字节不动），并在日志里明确告警。
+        // 没有（可信）备份时只把 main 的值改回原始值（其它字节不动），并在日志里明确告警。
         void RestoreOriginalPackageJson(string pkg, string backupPkg, string why)
         {
+            // 备份只有在「它自己的 main 就是原版值」时才算可信。
+            // 旧安装器重复安装、或用户用别的工具改过 package.json 时，备份里存的可能也是旧值，
+            // 直接拷回去等于什么都没做，还会让日志谎报「已恢复原版」（见 qqnt-liuli-theme#45）。
             if (!string.IsNullOrEmpty(backupPkg) && File.Exists(backupPkg))
             {
-                File.Copy(backupPkg, pkg, true);
-                Log(why + "改过 " + pkg + "：已用备份 " + Path.GetFileName(backupPkg) + " 恢复原版");
-                return;
+                string bkMain = ReadPackageMain(backupPkg);
+                if (IsOriginalMain(bkMain))
+                {
+                    File.Copy(backupPkg, pkg, true);
+                    Log(why + "改过 " + pkg + "：已用备份 " + Path.GetFileName(backupPkg) + " 恢复原版");
+                    return;
+                }
+                Log("警告：备份 " + Path.GetFileName(backupPkg) + " 里的 main 是 "
+                    + (bkMain == null ? "(读不到)" : bkMain) + "，不是原版值，不能用它恢复；"
+                    + "改为只把 main 字段改回原版。");
             }
             try
             {
@@ -687,7 +697,7 @@ namespace LiteLoaderInstaller
                 string restored = text.Substring(0, m.Index) + m.Groups[1].Value + "\"" + MainOriginalText + "\""
                     + text.Substring(m.Index + m.Length);
                 File.WriteAllText(pkg, restored, Utf8);
-                Log("警告：没有 " + pkg + " 的原版备份，已把 main 改回 " + MainOriginalText + "（其它字节未动）。"
+                Log("已把 " + pkg + " 的 main 改回 " + MainOriginalText + "（其它字节未动）。"
                     + "若 QQ 仍报「文件已损坏」，用 QQ 官方安装包修复一次再装。");
             }
             catch (Exception ex) { Log("恢复 " + pkg + " 失败：" + ex.Message); }
