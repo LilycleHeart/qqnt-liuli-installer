@@ -17,8 +17,8 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyVersion("1.1.2.0")]
-[assembly: AssemblyFileVersion("1.1.2.0")]
+[assembly: AssemblyVersion("1.1.3.0")]
+[assembly: AssemblyFileVersion("1.1.3.0")]
 
 namespace LiteLoaderInstaller
 {
@@ -370,6 +370,9 @@ namespace LiteLoaderInstaller
                     else throw new Exception("未知参数 " + mode);
                     // #35：自动启动 QQ 失败时把原因写进 installer.log（诊断包会带走）
                     if (StartQQNote != null) HeadlessLine(w, StartQQNote);
+                    // 还原后 QQ.exe 仍是降级版：写进日志，诊断包和用户都能看到
+                    if (RestoreNote != null)
+                        HeadlessLine(w, "警告: " + RestoreNote.Replace("\r\n", " ").Replace("\n", " "));
                     HeadlessLine(w, "OK");
                     return 0;
                 }
@@ -409,6 +412,7 @@ namespace LiteLoaderInstaller
                     else
                     {
                         done = StartQQNote == null ? "还原完成，QQ 已打开" : "还原完成；请手动双击 QQ 图标启动";
+                        if (RestoreNote != null) done = "还原完成（QQ.exe 需要修复）";
                     }
                     Log(done);
                     if (StartQQNote != null) Log(StartQQNote);
@@ -422,6 +426,9 @@ namespace LiteLoaderInstaller
                     installBtn.Text = done != null && install ? "重新安装" : "一键安装";
                     SetStatus(done ?? fail, fail != null ? Err : (injectionOk ? Ok : Warn));
                     if (fail != null || !injectionOk) ToggleDetail(true);
+                    // 还原后 QQ.exe 仍是旧方案的降级版：必须让用户看到，否则他会以为已经回到原版
+                    if (RestoreNote != null)
+                        MessageBox.Show(this, RestoreNote, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     if (done != null && install && !injectionOk)
                         MessageBox.Show(this,
                             "QQ 已启动，但 30 秒内未检测到 LiteLoader 或琉璃插件的启动日志更新，注入未生效。\n\n"
@@ -551,6 +558,18 @@ namespace LiteLoaderInstaller
             {
                 try { File.Copy(bkExe, rootExe, true); Log("旧方案降级过 QQ.exe：已把备份里的原版拷回 " + rootExe); }
                 catch (Exception ex) { Log("恢复原版 QQ.exe 失败：" + ex.Message); }
+            }
+            // 兜底：备份里没有原版（或拷贝失败）时，降级版 QQ.exe 会留在原地。
+            // 必须明确告诉用户，否则他会以为「还原成功 = 回到原版」，再装新方案就带着一个坏启动器。
+            RestoreNote = null;
+            if (File.Exists(rootExe) && !SignedByTencent(rootExe))
+            {
+                RestoreNote = "还原后 " + rootExe + " 仍然读不到腾讯签名。\n\n"
+                    + "这是旧安装器（1.0.x）换进去的降级版，而本安装器的备份里没有原版 QQ.exe 可以恢复"
+                    + "（可能是之前点过还原，或者备份已被清理）。\n\n"
+                    + "请用 QQ 官方安装包覆盖安装一次，再用本安装器重新安装 —— 否则 QQ 可能报"
+                    + "「文件已损坏」或者打不开。";
+                Log("警告：还原后 QQ.exe 仍无腾讯签名，需要 QQ 官方安装包修复（" + rootExe + "）");
             }
 
             // 2) 删掉我们放在 QQ 根目录的代理 / hook / 配置
@@ -4326,6 +4345,9 @@ namespace LiteLoaderInstaller
         // 自动拉起 QQ 的结果：null = 已交给 explorer 代启动（普通权限）；
         // 非 null = 这次没能以普通权限启动 QQ，内容是要告诉用户的话（由 Run / Headless 输出）。
         static string StartQQNote;
+        // 还原后 QQ.exe 仍无腾讯签名时给用户的说明（GUI 弹框 / Headless 日志）。
+        // 场景：旧方案换进去的降级版 QQ.exe 还在，而备份里没有原版可恢复（之前点过还原、备份被清）。
+        static string RestoreNote;
 
         static void StartQQ(string root)
         {
