@@ -48,6 +48,23 @@
 若重启后仍未生效，可运行「还原」，或导出诊断包反馈。`liuli-hook.log` 只证明 hook 正在活动，
 **不作为注入成功信号**。
 
+## QQ 自动更新后失效？
+
+QQ 的热更新（Hotupdate）会**整体替换 `versions\<版本>\` 目录**：装在旧目录 `resources\app\`
+里的 `liuli_loader.js` / `package.patched.json` 随旧目录一起消失，而 QQ 根目录的
+`winmm.dll` / `dbghelp.dll` / `hook.ini` 不受影响——hook 每次启动都还在拦截、还想换源，
+但 patched 文件已经不存在（`liuli-hook.log` 里是成串的 `why=patched-missing`），主题静默失效。
+用户视角往往只是「重启几次电脑后琉璃没了」，实际是某次 QQ 自动更新（`versions\config.json`
+里能看到 `prevVersion` → `curVersion` 的切换）。
+
+1.1.5 起，GUI 启动或更改路径时会做**注入失联体检**：QQ 根目录有 hook 三件套、而
+`curVersion` 指向的版本目录里缺注入文件时，明确弹出「QQ 已自动更新到 \<版本\>，注入文件已失联」，
+可选择马上重新注入（就是正常安装流程，会先关闭 QQ）；`installer.log` 同步写一行
+带 `patched-missing` 计数的机器可读记录。重新注入只恢复**加载通道**：若琉璃尚未适配
+新 QQ 版本（如 9.9.37 的 renderer 样式问题，见
+[qqnt-liuli-theme#58](https://github.com/LilycleHeart/qqnt-liuli-theme/issues/58)），
+界面可能仍显示异常，等主题适配即可。
+
 ## 导出诊断包（用户来报问题时）
 
 右上角「导出诊断包」→ 桌面生成 `QQ诊断包-<时间>.zip`。
