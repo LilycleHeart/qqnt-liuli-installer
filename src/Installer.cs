@@ -17,8 +17,8 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyVersion("1.1.4.0")]
-[assembly: AssemblyFileVersion("1.1.4.0")]
+[assembly: AssemblyVersion("1.1.5.0")]
+[assembly: AssemblyFileVersion("1.1.5.0")]
 
 namespace LiteLoaderInstaller
 {
@@ -201,6 +201,8 @@ namespace LiteLoaderInstaller
             OpenGuiLog();
             Log("安装器界面已启动（GUI 日志写入 installer.log，带时间戳）");
             CheckPath();
+            // 注入失联体检放到首次显示之后：构造期弹窗没有可依附的窗口
+            Shown += delegate { CheckOrphanedInjection(); };
         }
 
         LinkLabel MakeLink(string text, int x)
@@ -232,6 +234,97 @@ namespace LiteLoaderInstaller
             bool ok = PathOk();
             installBtn.Enabled = ok;
             SetStatus(ok ? "会先关闭 QQ，并备份原文件" : "没找到 QQ，请点「更改」选 QQ.exe 所在文件夹", ok ? TextSub : Err);
+            if (ok) CheckOrphanedInjection();
+        }
+
+        // ---------- 注入失联体检（issue #4） ----------
+        // QQ 自动更新（Hotupdate）会整体替换 versions\<版本>\：装在旧目录 resources\app\ 里的
+        // liuli_loader.js / package.patched.json 跟着消失，而 QQ 根目录的 winmm.dll / dbghelp.dll /
+        // hook.ini 不受影响——hook 每次启动都想改写但 patched 文件不存在（hook 日志 why=patched-missing），
+        // 主题静默失效。用户视角只是「重启几次后失效了」，这里把这种半死状态明确指出来。
+        string orphanCheckRoot;   // 已提醒过的 QQ 根目录：每个路径只体检一次，避免 TextChanged 反复弹窗
+
+        void CheckOrphanedInjection()
+        {
+            if (installBtn == null || bar.Visible) return;
+            if (!PathOk()) { orphanCheckRoot = null; return; }
+            string root = qqBox.Text.Trim().Trim('"');
+            if (root.Equals(orphanCheckRoot, StringComparison.OrdinalIgnoreCase)) return;
+
+            // 只有 QQ 根目录已有 hook 三件套才谈得上「失联」；全新机器/已还原不打扰
+            bool hasHook = File.Exists(Path.Combine(root, "dbghelp.dll"))
+                        && File.Exists(Path.Combine(root, "winmm.dll"))
+                        && File.Exists(Path.Combine(root, "hook.ini"));
+            if (!hasHook) { orphanCheckRoot = root; return; }
+
+            // 优先体检 curVersion 指向的版本目录（Hotupdate 后就是新目录）；config.json 读不到时看全部
+            string curVer = ReadCurVersion(root);
+            List<string> apps = new List<string>();
+            try
+            {
+                if (curVer != null)
+                {
+                    string app = Path.Combine(root, "versions", curVer, "resources", "app");
+                    if (Directory.Exists(app)) apps.Add(app);
+                }
+                if (apps.Count == 0) apps.AddRange(AppDirs(root));
+            }
+            catch { }
+            orphanCheckRoot = root;
+            if (apps.Count == 0) return;
+
+            List<string> missing = new List<string>();
+            foreach (var app in apps)
+            {
+                if (!File.Exists(Path.Combine(app, "liuli_loader.js"))) missing.Add("liuli_loader.js");
+                else if (!File.Exists(Path.Combine(app, "package.patched.json"))) missing.Add("package.patched.json");
+            }
+            if (missing.Count == 0) return;
+
+            int missCount = CountHookPatchedMissing();
+            string verText = curVer != null ? curVer : "未知版本";
+            Log("状态体检：注入文件失联——QQ 已自动更新到 " + verText
+                + "，当前版本目录缺 " + string.Join("、", missing.ToArray())
+                + "；hook 日志 patched-missing " + missCount + " 次");
+            SetStatus("QQ 已自动更新，注入已失联——点「一键安装」重新注入", Err);
+            if (MessageBox.Show(
+                "检测到 QQ 已自动更新到 " + verText + "：版本目录被整体替换，\n"
+                + "原来的注入文件（" + string.Join(" / ", missing.ToArray()) + "）已随旧目录消失，琉璃因此失效。\n"
+                + "QQ 根目录的 hook 还在，每次启动都在找这些文件（日志里 patched-missing " + missCount + " 次）。\n\n"
+                + "现在就重新注入吗？（就是正常安装流程，会先关闭 QQ）\n\n"
+                + "注意：若琉璃尚未适配这个 QQ 版本，重注入后界面可能显示异常（可先看主题仓库的版本支持说明）；\n"
+                + "也可以点「还原」彻底回到原版 QQ。",
+                Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                Run(true);
+        }
+
+        // versions\config.json 的 curVersion：Hotupdate 更新后指向新版本目录
+        static string ReadCurVersion(string root)
+        {
+            try
+            {
+                string cfg = Path.Combine(root, "versions", "config.json");
+                if (!File.Exists(cfg)) return null;
+                var map = MiniJson.AsObj(MiniJson.Parse(File.ReadAllText(cfg, Utf8)));
+                string v = map == null ? null : MiniJson.Str(map, "curVersion");
+                return string.IsNullOrEmpty(v) ? null : v;
+            }
+            catch { return null; }
+        }
+
+        // hook 日志里 patched-missing 的次数：>0 说明失联正在发生（而不是历史痕迹）
+        int CountHookPatchedMissing()
+        {
+            try
+            {
+                string log = Path.Combine(LLRoot, "liuli-hook.log");
+                if (!File.Exists(log)) return 0;
+                int n = 0;
+                foreach (var line in File.ReadLines(log, Utf8))
+                    if (line.IndexOf("why=patched-missing", StringComparison.Ordinal) >= 0) n++;
+                return n;
+            }
+            catch { return 0; }
         }
 
         void SetStatus(string s, Color c)
